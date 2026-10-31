@@ -587,7 +587,7 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Enter' && e.shiftKey && cur) {   // run: the cell, or everything in the group, then move on
     e.preventDefault();
     const last = gh ? [...cur.parentElement.querySelectorAll('.cell')].pop()?.dataset.uid : focusUid;
-    if (last) sync(last);
+    if (last) sync(last, gh ? null : last);
     if (!gh) focusEl(items[Math.min(i + 1, items.length - 1)]);
   }
   else if (e.key === 'Enter' && cur) { e.preventDefault(); gh ? cur.click() : edit(focusUid); }
@@ -629,9 +629,11 @@ async function run(target, kind) {
   markDirty();
   if ($('#side').classList.contains('open') && sideMode !== 'chat') refreshSide();
 }
-async function sync(upto) {
-  const h = runHandler(); let up = false;
+// `show`: also reveal that cell's value (Shift+Enter), so running a cell visibly does something.
+async function sync(upto, show) {
+  const h = runHandler(show); let up = false;
   await stream('/api/sync', {upto: upto || '', origin: ME}, e => { if (e.ev === 'uptodate') up = true; else h(e); });
+  if (up && show) { const r = cellOut(show)?.querySelector('.res:not(.preview)'); if (r && !r.nextElementSibling?.classList.contains('v')) r.click(); }
   if (up) toast(upto ? 'up to date — nothing to re-run (Alt+click ▶ forces a run)' : 'everything is up to date');
   markDirty();
   if ($('#side').classList.contains('open') && sideMode !== 'chat') refreshSide();
@@ -672,7 +674,7 @@ async function markDirty() {
   for (const u of order) { const c = cells[u]; c.el.classList.toggle('dirty', d.has(u)); c.el.querySelector('.gut .no').title = d.has(u) ? 'out of date: Sync will run it' : ''; }
 }
 // Renders one run's events into the cells; used for this page's runs and for runs started elsewhere (agents, other tabs).
-function runHandler() {
+function runHandler(show) {
   let cur = null, first = null, uids = [], marks = [];
   const at = () => cellOut(cur || first) || $('#doc');
   const pre = (cls, text) => { const o = at(); let p = o.lastElementChild; if (!p || !p.classList.contains(cls)) { p = el('pre', cls); o.append(p); } p.insertAdjacentHTML('beforeend', ansi(text)); };
@@ -696,7 +698,9 @@ function runHandler() {
           const evs = await op('expand', {ref: e.ref}); const nd = evs.find(x => x.ev === 'node'), er = evs.find(x => x.ev === 'error');
           r.after(nd ? nodeEl(nd.node, null, 0) : el('div', 'vdim', er ? er.what : 'unavailable')); r.querySelector('b').textContent = 'hide';
         };
-        o.append(r); break;
+        o.append(r);
+        if (e.uid === show) r.click();
+        break;
       }
       case 'rich': {
         const d = el('div', 'rich');
@@ -804,7 +808,7 @@ function editPlain(c, uid) {
     const finish = async (save, run) => {
       if (save && ta.value !== c.text) await api('/api/cell', {action: 'replace', uid, text: ta.value});
       focusUid = uid; ownWrite = Date.now(); await load(); done();
-      if (run) sync(uid);
+      if (run) sync(uid, uid);
     };
     ta.oninput = fit;
     ta.onkeydown = async e => {
@@ -986,42 +990,41 @@ $('#extract').onclick = async () => {
   if (!r.ok) { toast('could not move cells'); return; }
   [...selected].forEach(toggleSel); load();
 };
-// Hot reload: the server long-polls for source changes made outside the page (an editor, a coding agent, git).
-fetch('/api/watch?v=-1&token=' + TOKEN).then(r => r.json()).then(j => { watchStart(j.v); });
-function watchStart(v0) {
-  (async () => {
-    let v = v0;
-    for (;;) {
-      try {
-        const j = await (await fetch('/api/watch?v=' + v + '&token=' + TOKEN)).json();
-        if (j.v !== v) {
-          v = j.v;
-          if (editing) reloadPending = true;
-          else { const y = scrollY; await load(); scrollTo(0, y); if (Date.now() - ownWrite > 2000) toast('files changed on disk — reloaded'); }
-        }
-      } catch (e) { await new Promise(r => setTimeout(r, 2000)); }
-    }
-  })();
+// One stream per visible tab carries everything live: runs started elsewhere (agents via `zeno mcp`, other
+// tabs) and source changes made outside the page (an editor, a coding agent, git). Browsers allow only ~6
+// connections per server, so hidden tabs let go of theirs and catch up from `since` when shown again.
+let fileVersion = null;
+async function filesChanged(v) {
+  if (fileVersion === v) return;
+  const first = fileVersion === null; fileVersion = v;
+  if (first) return;
+  if (editing) reloadPending = true;
+  else { const y = scrollY; await load(); scrollTo(0, y); if (Date.now() - ownWrite > 2000) toast('files changed on disk — reloaded'); }
 }
-// Runs started by other clients (coding agents via `zeno mcp`, other tabs) show up here too.
 (async function follow() {
   let since = 0, h = null;
   for (;;) {
+    while (document.hidden) await new Promise(r => document.addEventListener('visibilitychange', r, {once: true}));
+    const ac = new AbortController(), hide = () => { if (document.hidden) ac.abort(); };
+    document.addEventListener('visibilitychange', hide);
     try {
       await stream0('/api/events?since=' + since + '&token=' + TOKEN, e => {
-        if (e.ev === 'hello') { since = e.seq; return; }
+        if (e.ev === 'hello') { since = e.seq; filesChanged(e.files); return; }
+        if (e.seq) since = e.seq;
+        if (e.ev === 'files') { filesChanged(e.v); return; }
         if (e.ev === 'rollback') { toast(e.restart ? 'restarted the kernel to keep state consistent' : 'rolled back ' + e.undo + ' run(s) to keep state consistent'); return; }
         if (e.ev === 'ping' || e.origin === ME) return;
         if (e.ev === 'batch') { h = runHandler(); toast('running ' + e.uids.length + ' cell(s) for ' + e.origin); }
         if (h) h(e);
         if (e.ev === 'done') markDirty();
-      });
+      }, ac.signal);
     } catch (err) {}
-    await new Promise(r => setTimeout(r, 1500));
+    document.removeEventListener('visibilitychange', hide);
+    if (!document.hidden) await new Promise(r => setTimeout(r, 1500));
   }
 })();
-async function stream0(url, on) {   // GET stream without the busy indicator
-  const r = await fetch(url), rd = r.body.getReader(), dec = new TextDecoder(); let buf = '';
+async function stream0(url, on, signal) {   // GET stream without the busy indicator
+  const r = await fetch(url, {signal}), rd = r.body.getReader(), dec = new TextDecoder(); let buf = '';
   for (;;) { const {done, value} = await rd.read(); if (done) return; buf += dec.decode(value, {stream: true}); let i; while ((i = buf.indexOf('\n')) >= 0) { const l = buf.slice(0, i); buf = buf.slice(i + 1); if (l) on(JSON.parse(l)); } }
 }
 load().then(() => { if (new URLSearchParams(location.search).get('run') === 'all') sync(''); });

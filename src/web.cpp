@@ -445,13 +445,13 @@ void handle(int fd) {
     Stream st(fd, "application/x-ndjson");
     long seq = std::atol(r.q["since"].c_str());
     { std::lock_guard<std::mutex> l(g_rmu); if (seq == 0) seq = g_seq; }
-    st.chunk("{\"ev\":\"hello\",\"seq\":" + std::to_string(seq) + "}\n");
+    st.chunk("{\"ev\":\"hello\",\"seq\":" + std::to_string(seq) + ",\"files\":" + std::to_string(g_version.load()) + "}\n");
     while (st.ok) {
       std::vector<std::string> out;
       {
         std::unique_lock<std::mutex> l(g_rmu);
         g_lcv.wait_for(l, std::chrono::seconds(15), [&] { return g_seq > seq; });
-        for (auto& [n, line] : g_log) if (n > seq) out.push_back(line);
+        for (auto& [n, line] : g_log) if (n > seq) out.push_back("{\"seq\":" + std::to_string(n) + "," + line.substr(1));   // seq lets a client resume
         seq = g_seq;
       }
       if (out.empty()) st.chunk("{\"ev\":\"ping\"}\n");
@@ -591,7 +591,10 @@ int web_main(const std::string& root, int port, bool open_browser, const std::st
     for (;;) {
       std::this_thread::sleep_for(std::chrono::milliseconds(400));
       size_t now = project_signature(g_root);
-      if (now != sig) { sig = now; { std::lock_guard<std::mutex> l(g_vmu); ++g_version; } g_vcv.notify_all(); }
+      if (now != sig) {
+        sig = now; { std::lock_guard<std::mutex> l(g_vmu); ++g_version; } g_vcv.notify_all();
+        publish("{\"ev\":\"files\",\"v\":" + std::to_string(g_version.load()) + "}");
+      }
     }
   }).detach();
   g_port = port;
