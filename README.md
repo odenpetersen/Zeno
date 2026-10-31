@@ -22,7 +22,7 @@ something is missing. Opening an empty folder in the browser offers the same sta
 | Command | What it does |
 |---|---|
 | `zeno new [dir]` | write a short tour notebook to `dir/main.cpp` |
-| `zeno web [path] [--host 0.0.0.0] [--port N]` | browser notebook; `--host 0.0.0.0` makes it reachable from your network |
+| `zeno web [path] [--host 0.0.0.0] [--port N] [--token]` | browser notebook; `--host 0.0.0.0` makes it reachable from your network, `--token` requires a secret in the URL |
 | `zeno [path]` | terminal notebook (`.help` lists commands) |
 | `zeno run [path]` | run everything and print the outputs; non-zero exit on failure |
 | `zeno mcp [path]` | MCP server so coding agents can read, edit and run the notebook |

@@ -440,7 +440,7 @@ function carryState(tree) {
 async function load() {
   if (ownWrite > Date.now()) ownWrite = Date.now();
   const r = await fetch('/api/tree', {headers: {'X-Token': TOKEN}});
-  if (r.status === 403) { $('#doc').textContent = 'Open the URL printed by zeno (it carries an access token).'; return; }
+  if (r.status === 403) { $('#doc').textContent = 'This server was started with --token: open the URL zeno printed (it carries the token).'; return; }
   const j = await r.json();
   tree = j.tree; cells = {}; order = [];
   carryState(tree);

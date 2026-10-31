@@ -80,7 +80,7 @@ struct Kernel {
 int kernel_main();
 int tui_main(const std::string& path);
 int run_main(const std::string& notebook);
-int web_main(const std::string& notebook, int port, bool open_browser, const std::string& host = "127.0.0.1");
+int web_main(const std::string& notebook, int port, bool open_browser, const std::string& host = "127.0.0.1", bool token = false);
 int mcp_main(const std::string& root);
 int new_main(const std::string& dir);
 int doctor_main();

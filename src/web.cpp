@@ -371,7 +371,7 @@ void handle(int fd) {
   if (!read_req(fd, r)) { close(fd); return; }
   if (r.path == "/" || r.path == "/index.html") { respond(fd, 200, "text/html; charset=utf-8", kUiHtml); close(fd); return; }
   std::string tok = r.hdr.count("x-token") ? r.hdr["x-token"] : r.q["token"];
-  if (tok != g_token) { respond(fd, 403, "text/plain", "bad token: open the URL printed by zeno"); close(fd); return; }
+  if (!g_token.empty() && tok != g_token) { respond(fd, 403, "text/plain", "bad token: open the URL printed by zeno"); close(fd); return; }
   J b = J::parse(r.body.empty() ? "{}" : r.body);
   const std::string& p = r.path;
   if (p == "/api/tree") respond(fd, 200, "application/json", "{\"root\":" + jq(g_root) + ",\"tree\":" + project_json(g_root) + "}");
@@ -567,12 +567,14 @@ void handle(int fd) {
 }
 }  // namespace
 
-int web_main(const std::string& root, int port, bool open_browser, const std::string& host) {
+int web_main(const std::string& root, int port, bool open_browser, const std::string& host, bool token) {
   signal(SIGPIPE, SIG_IGN);
   g_root = root.empty() ? "." : root;
-  std::random_device rd;
-  char tk[33]; std::snprintf(tk, sizeof tk, "%08x%08x%08x%08x", rd(), rd(), rd(), rd());
-  g_token = tk;
+  if (token) {   // --token: every request must carry a random secret
+    std::random_device rd;
+    char tk[33]; std::snprintf(tk, sizeof tk, "%08x%08x%08x%08x", rd(), rd(), rd(), rd());
+    g_token = tk;
+  }
   g_k.mode = "web"; g_k.start();
   int s = socket(AF_INET, SOCK_STREAM, 0), one = 1;
   setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
@@ -593,7 +595,8 @@ int web_main(const std::string& root, int port, bool open_browser, const std::st
     }
   }).detach();
   g_port = port;
-  std::string url = "http://127.0.0.1:" + std::to_string(port) + "/?token=" + g_token;
+  std::string q = g_token.empty() ? "/" : "/?token=" + g_token;
+  std::string url = "http://127.0.0.1:" + std::to_string(port) + q;
   {   // advertise this server so `zeno mcp` can find it
     std::string dir = std::string(getenv("HOME") ? getenv("HOME") : "/tmp") + "/.cache/zeno/servers";
     std::filesystem::create_directories(dir);
@@ -615,8 +618,9 @@ int web_main(const std::string& root, int port, bool open_browser, const std::st
         }
       freeifaddrs(ifs);
     }
-    for (auto& ip : ips) std::printf("          http://%s:%d/?token=%s\n", ip.c_str(), port, g_token.c_str());
-    std::printf("  anyone who can reach these addresses and has the token can run code as you\n");
+    for (auto& ip : ips) std::printf("          http://%s:%d%s\n", ip.c_str(), port, q.c_str());
+    std::printf(g_token.empty() ? "  anyone who can reach these addresses can run code as you (--token requires a secret)\n"
+                                : "  anyone who can reach these addresses and has the token can run code as you\n");
   }
   std::printf("  serving %s — Ctrl-C to stop\n", std::filesystem::absolute(g_root).c_str());
   std::fflush(stdout);
