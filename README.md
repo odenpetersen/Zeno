@@ -57,7 +57,7 @@ To try the bundled examples without installing: `make && ./zeno web examples/dem
 ## Seeing values
 
 - **Results are hidden until revealed.** Each value-producing cell shows its type with a *reveal* link. Before a cell has ever run, the compiler supplies its type and memory layout ("not run · layout").
-- **Structs** show each field's offset, size, type and value, with padding rows (the CLion-style memory layout).
+- **Structs** show a memory map: one row per 8 bytes, each field a coloured block spanning its bytes, padding hatched, and a note when reordering the fields would shrink the struct. A table below lists offset, size, type and value; hovering a block highlights its row. Before a cell runs, the same map comes from the compiler.
 - **Containers:**
   - Numeric sequences get a sparkline and min/max/mean/std.
   - Vectors of structs become tables.
@@ -89,7 +89,8 @@ To try the bundled examples without installing: `make && ./zeno web examples/dem
 
 ## Editing, git, hot reload
 
-- **Editing:** Enter or double-click edits just that cell, in place. The default editor is a plain text box: Ctrl+S saves, Shift+Enter saves and syncs, Esc cancels, Ctrl+Space asks the model for a completion. Saving writes the cell back into its file. In the terminal REPL, `.edit N` opens `$EDITOR`.
+- **Keys:** one cell or group header is selected at a time. `j`/`k` (or ↓/↑) move, `h`/`l` (or ←/→) fold and unfold groups and move up or into a level, `g`/`G` jump to the top or bottom, Enter edits a cell (or toggles a group), Shift+Enter runs it (for a group, everything in it), `b` adds a cell below, `x` multi-selects, `?` lists the keys.
+- **Editing:** Enter or a click on the code edits just that cell, in place. The default editor is a plain text box: Ctrl+S saves, Shift+Enter saves and syncs, Esc cancels, Ctrl+Space asks the model for a completion. Saving writes the cell back into its file. In the terminal REPL, `.edit N` opens `$EDITOR`.
 - **Vim (optional):** the **editor** button in the header switches this browser to vim, running in a terminal embedded in the cell. The terminal grows with the buffer, because vim reports its line count through an escape sequence. `:wq` saves; Ctrl-Space (or Ctrl-X Ctrl-U) completes from the model.
 - **Hot reload:** files changed on disk by an editor, a coding agent or git reload in place. Outputs stay with the right cells: cell lists are aligned diff-style, so inserting a cell doesn't misattribute outputs. Edited cells keep their old output, marked stale.
 - **Git:** the header shows the branch, and cells that differ from HEAD get a change bar.

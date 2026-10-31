@@ -110,7 +110,16 @@ pre.diag{background:var(--code);max-height:320px;overflow:auto}
 .settings input{font:12px var(--mono);padding:4px 6px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--ink);width:100%}
 .term{border-radius:6px;overflow:hidden;background:#111;padding:4px}
 textarea.ed{display:block;width:100%;box-sizing:border-box;margin:0;padding:6px 10px;background:var(--code);color:var(--ink);border:1px solid var(--s1);border-radius:6px;font:13px/1.45 var(--mono);white-space:pre;overflow:auto hidden;resize:none;tab-size:2;outline:none}
-.edhint{font-size:11px;color:var(--muted);margin:2px 2px 0}
+.edhint{font-size:11px;color:var(--ink3);margin:2px 2px 0}
+.gh.focus{box-shadow:inset 0 0 0 1px var(--acc)}
+.lgrid{display:grid;gap:2px;justify-content:start;font:11px var(--mono);margin:6px 0 4px}
+.lgrid .off{color:var(--ink3);text-align:right;padding-right:6px;align-self:center;font-size:10px}
+.lgrid .seg{border-radius:4px;padding:2px 5px;min-height:18px;line-height:18px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--ink);background:color-mix(in srgb,var(--fc) 20%,transparent);box-shadow:inset 3px 0 var(--fc)}
+.lgrid .seg.cont{box-shadow:none}
+.lgrid .seg.pad{background:repeating-linear-gradient(135deg,var(--line) 0 2px,transparent 2px 6px);box-shadow:none;color:var(--ink3);text-align:center}
+.lgrid .seg.hi,table.lay tr.hi td{outline:2px solid var(--acc);outline-offset:-2px}
+.lsum{font-size:11px;color:var(--ink3);margin-bottom:4px}
+.lsum b{color:var(--ink);font-weight:500}
 .toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:6px 14px;border-radius:8px;font-size:13px;z-index:9;opacity:0;transition:opacity .2s}
 .toast.on{opacity:.95}
 /* value inspector */
@@ -260,6 +269,73 @@ function lazyBtn(label, ref, into, replace) {
   };
   return b;
 }
+// A memory map of a struct: one row per 8 (or 16) bytes, each field a tinted block spanning its bytes,
+// padding hatched. L = {z: size, al: alignment if known, f: [{o, z, n, t, v}]}. `rows` links hover to a table.
+function layoutGrid(L, rows) {
+  const W = L.z > 128 ? 16 : 8, cap = 512, f = L.f.slice().sort((a, b) => a.o - b.o);
+  const segs = []; let at = 0;
+  f.forEach((x, i) => { if (x.o > at) segs.push({o: at, z: x.o - at, pad: true}); segs.push({...x, i}); at = Math.max(at, x.o + x.z); });
+  if (L.z > at) segs.push({o: at, z: L.z - at, pad: true});
+  const g = el('div', 'lgrid'); g.style.gridTemplateColumns = 'auto repeat(' + W + ',minmax(14px,48px))';
+  const shown = Math.min(L.z, cap);
+  for (let r = 0; r * W < shown; ++r) { const o = el('div', 'off', String(r * W)); o.style.gridRow = r + 1; o.style.gridColumn = 1; g.append(o); }
+  for (const sg of segs) {
+    const tip = sg.pad ? sg.z + ' B padding at offset ' + sg.o : sg.n + ' · ' + sg.t + ' · offset ' + sg.o + ' · ' + sg.z + ' B' + (sg.v != null ? ' = ' + sg.v : '');
+    for (let b = sg.o, first = true; b < Math.min(sg.o + sg.z, shown); first = false) {   // split at row ends
+      const row = Math.floor(b / W), end = Math.min(sg.o + sg.z, (row + 1) * W, shown);
+      const d = el('div', 'seg' + (sg.pad ? ' pad' : '') + (first ? '' : ' cont'), first ? (sg.pad ? 'pad ' + sg.z : sg.n) : '');
+      if (first && sg.v != null) d.append(el('span', 'vdim', ' ' + sg.v));
+      d.style.gridRow = row + 1; d.style.gridColumn = (b % W + 2) + ' / span ' + (end - b); d.title = tip;
+      if (!sg.pad) {
+        d.style.setProperty('--fc', sg.i < 8 ? 'var(--s' + (sg.i + 1) + ')' : 'var(--ink3)'); d.dataset.f = sg.i;
+        d.onmouseenter = () => hiField(g, rows, sg.i, true); d.onmouseleave = () => hiField(g, rows, sg.i, false);
+      }
+      g.append(d); b = end;
+    }
+  }
+  const data = f.reduce((a, x) => a + x.z, 0), pad = L.z - data, box = el('div');
+  const sum = el('div', 'lsum');
+  sum.innerHTML = '<b>' + L.z + ' B</b> · ' + data + ' B of fields · ' + (pad > 0 ? '<b>' + pad + ' B padding</b> (' + Math.round(100 * pad / L.z) + '%)' : 'no padding') +
+    (L.z > cap ? ' · first ' + cap + ' B shown' : '');
+  if (L.al && pad > 0) {   // fields sorted by alignment pack into the size rounded up to the struct's alignment
+    const best = Math.ceil(data / L.al) * L.al;
+    if (best < L.z) sum.innerHTML += ' · ordering fields by alignment would make it <b>' + best + ' B</b>';
+  }
+  if (rows) rows.forEach(tr => { const i = tr.dataset.f; if (i == null) return; tr.onmouseenter = () => hiField(g, rows, +i, true); tr.onmouseleave = () => hiField(g, rows, +i, false); });
+  box.append(g, sum);
+  return box;
+}
+function hiField(g, rows, i, on) {
+  g.querySelectorAll('.seg[data-f="' + i + '"]').forEach(d => d.classList.toggle('hi', on));
+  (rows || []).forEach(tr => { if (tr.dataset.f == i) tr.classList.toggle('hi', on); });
+}
+// gdb `ptype /o` text -> the top-level fields of the type, for layoutGrid (null if it isn't a struct)
+function parsePtype(text) {
+  const f = []; let depth = 0, pend = null, z = null;
+  for (const line of text.split('\n')) {
+    const m = /^\/\*\s+(\d+)(?::\s*\d+)?\s*\|\s*(\d+)\s*\*\/\s*(.*?)\s*$/.exec(line);
+    const body = m ? m[3] : line.replace(/\/\*.*?\*\//g, '').trim();
+    if (depth === 1 && m) {
+      if (body.endsWith('{')) { pend = {o: +m[1], z: +m[2], t: body.slice(0, -1).trim()}; depth++; continue; }
+      const d = /^(.*?)\s*\b(\w+)((?:\[\d*\])*)\s*;$/.exec(body);
+      if (d) f.push({o: +m[1], z: +m[2], n: d[2], t: (d[1] + d[3]).trim()});
+      continue;
+    }
+    const t = /total size \(bytes\):\s*(\d+)/.exec(line); if (t && depth === 1) z = +t[1];
+    if (/\{\s*$/.test(body) && !m) { depth++; continue; }
+    if (/^\}/.test(body)) { depth--; if (depth === 1 && pend) { const n = /^\}\s*(\w+)/.exec(body); f.push({...pend, n: n ? n[1] : '?'}); pend = null; } }
+  }
+  return f.length && z ? {z, f} : null;
+}
+function layoutView(text) {
+  const L = parsePtype(text), d = el('div');
+  const raw = el('pre', 'diag', text.trim());
+  if (!L) { d.append(raw); return d; }
+  const b = el('button', 'vbtn', 'gdb text'); raw.style.display = 'none';
+  b.onclick = () => raw.style.display = raw.style.display ? '' : 'none';
+  d.append(layoutGrid(L), b, raw);
+  return d;
+}
 function nodeEl(n, name, depth) {
   const v = el('div', 'v'), h = el('div', 'vh'), body = el('div', 'vb');
   v.append(h);
@@ -283,16 +359,17 @@ function nodeEl(n, name, depth) {
     if (!n.c) { if (n.x) body.append(lazyBtn('expand', n.x, v, true)); return v; }
     const t = el('table', 'lay'); t.innerHTML = '<tr><th>offset</th><th>size</th><th>field</th><th>type</th><th>value</th></tr>';
     const rows = n.c.map(c => ({o: c.o, c})).concat((n.p || []).map(p => ({o: p[0], pad: p[1]}))).sort((a, b) => a.o - b.o);
+    const trs = [];
     for (const r of rows) {
-      const tr = el('tr', r.pad ? 'pad' : '');
+      const tr = el('tr', r.pad ? 'pad' : ''); trs.push(tr);
       if (r.pad) { tr.innerHTML = '<td class="num">' + r.o + '</td><td class="num">' + r.pad + '</td><td colspan="3">padding</td>'; t.append(tr); continue; }
-      const c = r.c; tr.innerHTML = '<td class="num">' + c.o + '</td><td class="num">' + c.z + '</td><td>' + esc(c.n) + '</td><td class="vt">' + esc(c.t) + '</td>';
+      const c = r.c; tr.dataset.f = n.c.indexOf(c); tr.innerHTML = '<td class="num">' + c.o + '</td><td class="num">' + c.z + '</td><td>' + esc(c.n) + '</td><td class="vt">' + esc(c.t) + '</td>';
       const td = el('td'); tr.append(td);
       if (scalar(c)) { td.innerHTML = valHTML(c); if (c.x) { const box = el('div'); td.append(lazyBtn('▸ *', c.x, box, false), box); } if (c.xa) { const box = el('div'); td.append(lazyBtn('[ ]', c.xa, box, false), box); } }
       else { const sub = nodeEl(c, null, depth + 1); td.append(sub); }
       t.append(tr);
     }
-    body.append(t);
+    body.append(layoutGrid({z: n.z, al: n.al, f: n.c.map(c => ({o: c.o, z: c.z, n: c.n, t: c.t, v: scalar(c) ? c.v : null}))}, trs), t);
   } else if (n.k === 'seq' || n.k === 'map') {
     h.insertAdjacentHTML('beforeend', '<span class="vdim">size ' + n.n + '</span>');
     if (n.st) h.insertAdjacentHTML('beforeend', spark(n.sp) + '<span class="vdim">min ' + n.st.min.toPrecision(4) + ' · max ' + n.st.max.toPrecision(4) + ' · mean ' + n.st.mean.toPrecision(4) + ' · std ' + n.st.std.toPrecision(4) + '</span>');
@@ -317,7 +394,7 @@ function nodeEl(n, name, depth) {
     h.insertAdjacentHTML('beforeend', '<span class="vdim">' + n.z + ' B</span>');
     body.append(el('div', 'vdim', n.bytes || ''));
     const b = el('button', 'vbtn', 'memory layout (gdb)');
-    b.onclick = async () => { const evs = await op('layout', {type: n.rt}); const l = evs.find(x => x.ev === 'layout'); body.append(el('pre', 'diag', l ? l.text : '?')); b.remove(); };
+    b.onclick = async () => { const evs = await op('layout', {type: n.rt}); const l = evs.find(x => x.ev === 'layout'); body.append(l ? layoutView(l.text) : el('div', 'vdim', '?')); b.remove(); };
     body.append(b);
   }
   return v;
@@ -339,6 +416,7 @@ function group(kind, id, title, kids, runTarget, extraCls, defaultClosed, ro) {
   cnt.textContent = n + (n === 1 ? ' cell' : ' cells');
   if (runTarget != null) { const r = el('button', 'act', '▶ run'); r.onclick = e => { e.stopPropagation(); run(runTarget, 'group'); }; h.append(r); }
   h.onclick = () => {
+    focusEl(h);
     const c = g.classList.toggle('closed');
     if (c) { collapsed.add(key); collapsed.delete('open:' + key); } else { collapsed.delete(key); if (defaultClosed) collapsed.add('open:' + key); }
     saveCollapsed();
@@ -385,8 +463,9 @@ function cellEl(n) {
     const m = e.target.closest('.mac,.exp');
     if (m) { toggleMacro(info, +m.dataset.at, m.classList.contains('exp')); return; }
     focus(n.uid);
+    if (!info.ro && !getSelection().toString()) edit(n.uid);   // a click edits, a drag selects text
   };
-  pre.ondblclick = () => { if (!ctx.ro) edit(n.uid); };
+  c.addEventListener('click', () => { if (focusUid !== n.uid) focus(n.uid); });
   info.ro = ctx.ro;
   const acts = [['ask', () => askAbout(n.uid), 'Ask the assistant about this cell'], ['asm', () => showAsm(info), 'Disassembly of this cell']];
   if (!ctx.ro) acts.unshift(['edit', () => edit(n.uid), 'Edit (Enter)']), acts.push(['+ below', () => insertBelow(n.uid), 'New cell below (b)'], ['delete', () => del(n.uid), 'Delete cell']);
@@ -455,7 +534,7 @@ async function load() {
     b.onclick = async () => { await api('/api/new'); await load(); };
     card.append(b); doc.append(card);
   }
-  if (focusUid && cells[focusUid]) cells[focusUid].el.classList.add('focus');
+  curEl()?.classList.add('focus');
   loadMacros(); markDirty(); gitMarks(); previewTypes();
 }
 async function loadMacros() {
@@ -478,11 +557,23 @@ async function toggleMacro(c, at, collapse) {
 }
 
 // ---------------------------------------------------------------- focus, selection, keys
+// One thing is selected at a time: a cell (focusUid) or a group header (focusKey, the group's data-key).
+let focusKey = null;
+function curEl() { return focusUid ? cells[focusUid]?.el : focusKey ? $('#doc').querySelector('.grp[data-key="' + CSS.escape(focusKey) + '"] > .gh') : null; }
 function focus(uid) {
-  if (focusUid && cells[focusUid]) cells[focusUid].el.classList.remove('focus');
-  focusUid = uid;
+  curEl()?.classList.remove('focus');
+  focusUid = uid; focusKey = null;
   if (uid && cells[uid]) { cells[uid].el.classList.add('focus'); cells[uid].el.scrollIntoView({block: 'nearest'}); }
 }
+function focusEl(e) {
+  if (!e) return;
+  if (e.classList.contains('cell')) return focus(e.dataset.uid);
+  curEl()?.classList.remove('focus');
+  focusUid = null; focusKey = e.parentElement.dataset.key;
+  e.classList.add('focus'); e.scrollIntoView({block: 'nearest'});
+}
+const navItems = () => [...$('#doc').querySelectorAll('.cell,.gh')].filter(e => e.offsetParent !== null);
+const parentHeader = e => (e.classList.contains('gh') ? e.parentElement : e).parentElement.closest('.grp')?.querySelector(':scope > .gh');
 function toggleSel(uid) {
   selected.has(uid) ? selected.delete(uid) : selected.add(uid);
   cells[uid]?.el.classList.toggle('sel', selected.has(uid));
@@ -490,12 +581,30 @@ function toggleSel(uid) {
   $('#extract').textContent = 'Move ' + selected.size + ' selected to file…';
 }
 document.addEventListener('keydown', e => {
-  if (e.target.closest('.term,input,textarea,aside')) return;
-  const i = order.indexOf(focusUid);
-  if (e.key === 'Enter' && e.shiftKey && focusUid) { e.preventDefault(); sync(focusUid); focus(order[Math.min(i + 1, order.length - 1)]); }
-  else if (e.key === 'Enter' && focusUid) { e.preventDefault(); edit(focusUid); }
-  else if (e.key === 'j' || e.key === 'ArrowDown') { e.preventDefault(); focus(order[Math.min(i + 1, order.length - 1)]); }
-  else if (e.key === 'k' || e.key === 'ArrowUp') { e.preventDefault(); focus(order[Math.max(i - 1, 0)]); }
+  if (e.target.closest('.term,input,textarea,aside') || e.ctrlKey || e.metaKey || e.altKey) return;
+  const items = navItems(), cur = curEl(), i = items.indexOf(cur), gh = cur?.classList.contains('gh');
+  const go = e2 => { e.preventDefault(); focusEl(e2); };
+  if (e.key === 'Enter' && e.shiftKey && cur) {   // run: the cell, or everything in the group, then move on
+    e.preventDefault();
+    const last = gh ? [...cur.parentElement.querySelectorAll('.cell')].pop()?.dataset.uid : focusUid;
+    if (last) sync(last);
+    if (!gh) focusEl(items[Math.min(i + 1, items.length - 1)]);
+  }
+  else if (e.key === 'Enter' && cur) { e.preventDefault(); gh ? cur.click() : edit(focusUid); }
+  else if (e.key === 'j' || e.key === 'ArrowDown') go(items[i < 0 ? 0 : Math.min(i + 1, items.length - 1)]);
+  else if (e.key === 'k' || e.key === 'ArrowUp') go(items[Math.max(i - 1, 0)]);
+  else if (e.key === 'h' || e.key === 'ArrowLeft') {   // fold an open group, else go up a level
+    e.preventDefault();
+    if (gh && !cur.parentElement.classList.contains('closed')) cur.click(); else focusEl(cur && parentHeader(cur));
+  }
+  else if (e.key === 'l' || e.key === 'ArrowRight') {   // unfold a group, else step into it
+    e.preventDefault();
+    if (!gh) return;
+    if (cur.parentElement.classList.contains('closed')) cur.click(); else focusEl(navItems()[navItems().indexOf(cur) + 1]);
+  }
+  else if (e.key === 'g') go(items[0]);
+  else if (e.key === 'G') go(items[items.length - 1]);
+  else if (e.key === '?') toast('j/k move · h/l fold or unfold, up or into a level · Enter edit · Shift+Enter run · b new cell below · x select · g/G top/bottom');
   else if (e.key === 'b' && focusUid) insertBelow(focusUid);
   else if (e.key === 'x' && focusUid) toggleSel(focusUid);
   else if (e.key === 'Escape') { [...selected].forEach(toggleSel); }
@@ -540,7 +649,7 @@ async function previewTypes() {
       const ptr = /\}\s*(\*+|&)\s*$/.exec(text.trim());
       const r = el('div', 'res preview'); r.innerHTML = '⤷ <span>' + esc((m ? m[1] : 'value').trim() + (ptr ? ' ' + ptr[1] : '')) + '</span> <i>not run</i> <b>layout</b>';
       r.title = 'Type of this cell\'s value, from the compiler. Run it to see the value.';
-      r.onclick = () => { const n = r.nextElementSibling; if (n?.classList.contains('diag')) n.remove(); else r.after(Object.assign(el('pre', 'diag'), {textContent: text.trim()})); };
+      r.onclick = () => { const n = r.nextElementSibling; if (n?.classList.contains('lview')) n.remove(); else { const v = layoutView(text); v.classList.add('lview'); r.after(v); } };
       c.out.append(r);
     }
   } finally { previewing = false; }
