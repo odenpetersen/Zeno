@@ -68,7 +68,7 @@ int doctor_main() {
   line(major >= 11, cxx + " " + (v.status == 0 ? first_line(v.out) : "not found") + " (need 11+)", "install g++ 11 or newer, e.g. sudo apt install g++");
   line(has("gdb"), "gdb: crash backtraces, memory layouts, stack snapshots", "sudo apt install gdb", false);
   line(has("objdump") && has("addr2line"), "binutils: disassembly and heap allocation sites", "sudo apt install binutils", false);
-  line(has("vim"), "vim: editing cells in the browser", "sudo apt install vim (or set ZENO_VIM to another vim-compatible editor)", false);
+  line(has("vim"), "vim: optional vim mode for editing cells", "sudo apt install vim (or set ZENO_VIM to another vim-compatible editor)", false);
   line(has("git"), "git: change markers", "", false);
   std::printf("\nSystem\n");
   int ptrace = read_int("/proc/sys/kernel/yama/ptrace_scope");
