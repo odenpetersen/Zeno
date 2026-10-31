@@ -109,6 +109,8 @@ pre.diag{background:var(--code);max-height:320px;overflow:auto}
 .settings{display:grid;gap:6px;margin:8px 0;font-size:12px}
 .settings input{font:12px var(--mono);padding:4px 6px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--ink);width:100%}
 .term{border-radius:6px;overflow:hidden;background:#111;padding:4px}
+textarea.ed{display:block;width:100%;box-sizing:border-box;margin:0;padding:6px 10px;background:var(--code);color:var(--ink);border:1px solid var(--s1);border-radius:6px;font:13px/1.45 var(--mono);white-space:pre;overflow:auto hidden;resize:none;tab-size:2;outline:none}
+.edhint{font-size:11px;color:var(--muted);margin:2px 2px 0}
 .toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:6px 14px;border-radius:8px;font-size:13px;z-index:9;opacity:0;transition:opacity .2s}
 .toast.on{opacity:.95}
 /* value inspector */
@@ -139,6 +141,7 @@ canvas#heapmap{width:100%;height:90px;border-radius:6px;background:var(--code)}
  <button id="extract" style="display:none">Move selected to file…</button>
  <span class="sp"></span>
  <span id="branch"></span> <span id="status">idle</span>
+ <button id="teditor" title="Which editor opens when you edit a cell (remembered in this browser)"></button>
  <button id="tchat">Assistant</button><button id="tvars">Variables</button><button id="theap">Heap</button>
 </header>
 <div id="wrap"><main id="doc"></main><aside id="side"></aside></div>
@@ -386,7 +389,7 @@ function cellEl(n) {
   pre.ondblclick = () => { if (!ctx.ro) edit(n.uid); };
   info.ro = ctx.ro;
   const acts = [['ask', () => askAbout(n.uid), 'Ask the assistant about this cell'], ['asm', () => showAsm(info), 'Disassembly of this cell']];
-  if (!ctx.ro) acts.unshift(['edit', () => edit(n.uid), 'Edit in vim (Enter)']), acts.push(['+ below', () => insertBelow(n.uid), 'New cell below (b)'], ['delete', () => del(n.uid), 'Delete cell']);
+  if (!ctx.ro) acts.unshift(['edit', () => edit(n.uid), 'Edit (Enter)']), acts.push(['+ below', () => insertBelow(n.uid), 'New cell below (b)'], ['delete', () => del(n.uid), 'Delete cell']);
   for (const [label, f, tip] of acts) {
     const b = el('button', '', label); b.title = tip; b.onclick = e => { e.stopPropagation(); f(); }; tools.append(b);
   }
@@ -672,25 +675,53 @@ function showAsmData(a, uids, force) {
   }
 }
 
-// ---------------------------------------------------------------- editing (vim in a terminal inside the cell)
+// ---------------------------------------------------------------- editing (a plain editor, or vim in a terminal inside the cell)
+let editor = localStorage.getItem('zeno.editor') === 'vim' ? 'vim' : 'plain';
+function showEditor() { $('#teditor').textContent = 'editor: ' + editor; }
 async function edit(uid) {
-  const c = cells[uid]; if (!c || c.term) return;
+  const c = cells[uid]; if (!c || c.editing) return;
   if (c.ro) { toast('read-only (listed in .zeno.json)'); return; }
-  editing++;
-  try { await editInner(c, uid); } finally { editing--; if (reloadPending && !editing) { reloadPending = false; load(); } }
+  editing++; c.editing = true;
+  try { showCell(uid); await (editor === 'vim' && window.Terminal ? editVim(c, uid) : editPlain(c, uid)); }
+  finally { c.editing = false; editing--; if (reloadPending && !editing) { reloadPending = false; load(); } }
 }
-async function editInner(c, uid) {
-  showCell(uid);   // a terminal inside a collapsed group would have no size
-  if (!window.Terminal) return editFallback(c);
+// A textarea in place of the cell. Ctrl+S or Ctrl+Enter saves, Shift+Enter saves and syncs, Esc cancels, Ctrl+Space asks the model.
+function editPlain(c, uid) {
+  return new Promise(done => {
+    const box = el('div'), ta = el('textarea', 'ed'), hint = el('div', 'edhint', 'Ctrl+S save · Shift+Enter save & sync · Esc cancel · Ctrl+Space complete');
+    ta.value = c.text; ta.spellcheck = false; box.append(ta, hint); c.pre.replaceWith(box);
+    const fit = () => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 2 + 'px'; };
+    const put = t => { ta.setRangeText(t, ta.selectionStart, ta.selectionEnd, 'end'); fit(); };
+    const finish = async (save, run) => {
+      if (save && ta.value !== c.text) await api('/api/cell', {action: 'replace', uid, text: ta.value});
+      focusUid = uid; ownWrite = Date.now(); await load(); done();
+      if (run) sync(uid);
+    };
+    ta.oninput = fit;
+    ta.onkeydown = async e => {
+      const ctl = e.ctrlKey || e.metaKey;
+      if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+      else if ((ctl && (e.key === 's' || e.key === 'Enter')) || (e.key === 'Enter' && e.shiftKey)) { e.preventDefault(); finish(true, e.shiftKey); }
+      else if (e.key === 'Tab') { e.preventDefault(); put('  '); }
+      else if (e.key === 'Enter') { e.preventDefault(); const line = ta.value.slice(ta.value.lastIndexOf('\n', ta.selectionStart - 1) + 1, ta.selectionStart); put('\n' + /^\s*/.exec(line)[0]); }
+      else if (ctl && e.key === ' ') {
+        e.preventDefault(); const at = ta.selectionStart;
+        const {items} = await api('/api/complete', {uid, prefix: ta.value.slice(0, at), suffix: ta.value.slice(ta.selectionEnd)});
+        if (items && items.length) { ta.setRangeText(items[0], at, ta.selectionEnd, 'select'); fit(); } else toast('no suggestion');
+      }
+    };
+    fit(); ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
+  });
+}
+async function editVim(c, uid) {
   const box = el('div', 'term'); c.pre.replaceWith(box);
   const rows0 = Math.max(5, c.nlines + 1);
   const t = new Terminal({rows: rows0, fontSize: 13, fontFamily: 'ui-monospace,SFMono-Regular,Menlo,Consolas,monospace', cursorBlink: true, theme: {background: '#111111'}});
   const fit = new FitAddon.FitAddon(); t.loadAddon(fit); t.open(box);
   const cols = () => (fit.proposeDimensions() || {cols: 100}).cols;
   t.resize(cols(), rows0);
-  c.term = t;
   const {id} = await api('/api/term/open', {uid, rows: rows0, cols: cols()});
-  if (!(id > 0)) { t.dispose(); box.replaceWith(c.pre); c.term = null; toast('could not start vim'); return; }
+  if (!(id > 0)) { t.dispose(); box.replaceWith(c.pre); toast('could not start vim; using the plain editor'); return editPlain(c, uid); }
   // vim reports its line count via OSC 777 (see web.cpp); grow or shrink the terminal to fit
   t.parser.registerOscHandler(777, data => {
     const m = /lines=(\d+)/.exec(data);
@@ -703,14 +734,8 @@ async function editInner(c, uid) {
   const r = await fetch('/api/term/out?id=' + id + '&token=' + TOKEN);
   const rd = r.body.getReader();
   for (;;) { const {done, value} = await rd.read(); if (done) break; t.write(value); }
-  t.dispose(); c.term = null; focusUid = uid; ownWrite = Date.now();
+  t.dispose(); focusUid = uid; ownWrite = Date.now();
   await load();
-}
-function editFallback(c) {
-  const ta = el('textarea'); ta.value = c.text; ta.style.cssText = 'width:100%;font:13px var(--mono);min-height:' + (c.nlines + 2) * 1.5 + 'em';
-  c.pre.replaceWith(ta); ta.focus();
-  ta.onkeydown = async e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { await api('/api/cell', {action: 'replace', uid: c.uid, text: ta.value}); load(); } if (e.key === 'Escape') load(); };
-  toast('terminal unavailable (offline?): Ctrl+Enter saves, Esc cancels');
 }
 async function insertBelow(uid) {
   await api('/api/cell', {action: 'insert_after', uid, text: 'void(0);'});
@@ -835,6 +860,8 @@ function side(mode) {
   sideMode = mode; s.classList.add('open'); refreshSide();
 }
 $('#tvars').onclick = () => side('vars');
+$('#teditor').onclick = () => { editor = editor === 'vim' ? 'plain' : 'vim'; localStorage.setItem('zeno.editor', editor); showEditor(); toast(editor === 'vim' ? 'cells open in vim (:wq saves)' : 'cells open in the plain editor'); };
+showEditor();
 $('#tchat').onclick = () => { chatFocus = null; side('chat'); };
 $('#theap').onclick = () => side('heap');
 $('#runall').onclick = async () => { await api('/api/restart'); Object.values(outs).forEach(o => o.textContent = ''); run('', 'group'); };

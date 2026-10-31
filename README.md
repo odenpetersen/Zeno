@@ -44,7 +44,7 @@ To try the bundled examples without installing: `make && ./zeno web examples/dem
   - `//%link -lfoo` or `//%link other.cpp`
   - `//%check` (UBSan and libstdc++ assertions)
   - `//%asm`
-- **Read-only parts:** list globs in `.zeno.json` at the project root, e.g. `{"readonly": ["vendor/**", "third_party/**"]}`. Edits from the page, vim and agents are refused there.
+- **Read-only parts:** list globs in `.zeno.json` at the project root, e.g. `{"readonly": ["vendor/**", "third_party/**"]}`. Edits from the page and from agents are refused there.
 
 ## Running: always consistent, never "Run all"
 
@@ -89,8 +89,8 @@ To try the bundled examples without installing: `make && ./zeno web examples/dem
 
 ## Editing, git, hot reload
 
-- **Editing:** Enter or double-click opens vim on just that cell, in a terminal embedded in the cell. The terminal grows with the buffer, because vim reports its line count through an escape sequence. `:wq` writes the cell back into its file. In the terminal REPL, `.edit N` opens `$EDITOR`.
-- **Autocomplete in vim:** Ctrl-Space (or Ctrl-X Ctrl-U) asks the configured model.
+- **Editing:** Enter or double-click edits just that cell, in place. The default editor is a plain text box: Ctrl+S saves, Shift+Enter saves and syncs, Esc cancels, Ctrl+Space asks the model for a completion. Saving writes the cell back into its file. In the terminal REPL, `.edit N` opens `$EDITOR`.
+- **Vim (optional):** the **editor** button in the header switches this browser to vim, running in a terminal embedded in the cell. The terminal grows with the buffer, because vim reports its line count through an escape sequence. `:wq` saves; Ctrl-Space (or Ctrl-X Ctrl-U) completes from the model.
 - **Hot reload:** files changed on disk by an editor, a coding agent or git reload in place. Outputs stay with the right cells: cell lists are aligned diff-style, so inserting a cell doesn't misattribute outputs. Edited cells keep their old output, marked stale.
 - **Git:** the header shows the branch, and cells that differ from HEAD get a change bar.
 - **Grouping:** select cells (Shift-click the gutter, or `x`) and use **Move to file…** to put them in a new header, replaced by an `#include`.
