@@ -38,7 +38,6 @@ To try the bundled examples without installing: `make && ./zeno web examples/dem
 - **Local `#include "x.hpp"` are collapsible groups** holding that file's cells, run where they are included. Include guards and `#pragma once` are hidden.
 - **`int main(...) { … }` is a group of cells**, one per statement, so an ordinary program opens as a notebook. Its locals become inspectable variables, and `argc`/`argv` get defaults.
 - **Magic comments:**
-  - `//%timeit EXPR`
   - `//%flags -O3` (this cell)
   - `//%cflags …` (this and later cells)
   - `//%link -lfoo` or `//%link other.cpp`
@@ -76,7 +75,7 @@ To try the bundled examples without installing: `make && ./zeno web examples/dem
   - instructions and IPC, cache misses and branch misses (hardware counters)
   - allocations and heap growth, peak stack, RSS
 - **Per cell:** run time.
-- **Benchmarks:** `zeno::timeit(f)` / `//%timeit` report mean ± std per loop, with cycles and instructions.
+- **Benchmarks:** `TIMEIT(expr);` prints mean ± std per loop, with cycles and instructions, like `%timeit`. It is an ordinary macro (click it to see the loop it expands to), so it works in any function and sees locals. `zeno::timeit(f)` returns the numbers instead.
 - **Disassembly per cell:** `asm` in the cell toolbar. Hovering an instruction highlights its source line.
 - **Crashes** print a gdb backtrace with locals, pointing at the cell's file:line, then roll back.
 - **`zeno::here()`** prints a gdb snapshot of the stack with locals, like a breakpoint that keeps going.

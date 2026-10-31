@@ -389,8 +389,8 @@ void help() {
             << "  .heap / .leaks    live heap by site & cell / unreachable  .macro N NAME   expand a macro use in cell N\n"
             << "  .undo             roll back the last run                  .restart    fresh kernel\n"
             << "  .save F           append this session's inputs to F       .src        generated translation unit\n"
-            << "  magics (as // comments in files): //%timeit EXPR  //%flags -O3  //%cflags ..  //%link -lfoo  //%check  //%asm\n"
-            << "  in code: zeno::plot(v), zeno::hist(v), zeno::timeit(f), zeno::display(x), zeno::here(), zeno::read_csv(path)\n"
+            << "  magics (as // comments in files): //%flags -O3  //%cflags ..  //%link -lfoo  //%check  //%asm\n"
+            << "  in code: TIMEIT(expr);  zeno::plot(v), zeno::hist(v), zeno::timeit(f), zeno::display(x), zeno::here(), zeno::read_csv(path)\n"
             << "  Ctrl-C interrupts a running cell (its effects are rolled back).\n";
 }
 }  // namespace

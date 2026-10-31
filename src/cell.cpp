@@ -205,7 +205,8 @@ std::string fix_namespace(const std::string& text) {
 }  // namespace
 
 const std::set<std::string> kCtrl = {"if", "for", "while", "do", "switch", "return", "try", "break", "continue", "goto",
-                                     "throw", "co_return", "co_yield", "case", "default", "{"};
+                                     "throw", "co_return", "co_yield", "case", "default", "{",
+                                     "TIMEIT"};   // zeno.hpp's statement macro (a loop, not a value)
 
 Gen gen_batch(const std::vector<Src>& cells, int id) {
   Gen g;
@@ -254,8 +255,8 @@ Gen gen_batch(const std::vector<Src>& cells, int id) {
           }
           else if (cmd == "check") g.flags += " -fsanitize=undefined -D_GLIBCXX_ASSERTIONS -fno-omit-frame-pointer ";
           else if (cmd == "asm") g.want_asm = true;
-          else if (cmd == "timeit") stmt("std::cout << ::zeno::timeit([]() -> decltype(auto) { return (" + arg + "); }) << std::endl;", c.line);
-          else g.body += at(c.line) + "#error unknown magic %" + cmd + " (try %flags %cflags %link %check %asm %timeit)\n";
+          else if (cmd == "timeit") g.body += at(c.line) + "#error %timeit is now the TIMEIT(expr); macro\n";
+          else g.body += at(c.line) + "#error unknown magic %" + cmd + " (try %flags %cflags %link %check %asm)\n";
           break;
         }
         case 'b': {   // auto [a, b] = e;  ->  inline auto __sb = e; auto& [a, b] = __sb;

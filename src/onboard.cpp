@@ -29,7 +29,7 @@ for (double x : xs) ys.push_back(std::sin(x) + 0.1 * std::sin(17 * x));
 
 zeno::plot(xs, ys).title("a wobbly sine");
 
-//%timeit std::accumulate(ys.begin(), ys.end(), 0.0)
+TIMEIT(std::accumulate(ys.begin(), ys.end(), 0.0));
 
 // ## Change something
 //

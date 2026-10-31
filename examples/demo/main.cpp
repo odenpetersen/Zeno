@@ -44,7 +44,7 @@ SQUARE(scale + 1);
 // ## Plots and timing
 
 zeno::plot(samples).title("noisy sine");
-//%timeit std::accumulate(samples.begin(), samples.end(), 0.0)
+TIMEIT(std::accumulate(samples.begin(), samples.end(), 0.0));
 
 // ## Memory
 //

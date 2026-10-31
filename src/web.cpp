@@ -267,8 +267,8 @@ std::string chat_system(const std::string& focus) {
       "#includes form the hierarchy. Every top-level statement is a cell (declarations, function definitions, expression "
       "statements, if/for blocks). Comments on their own line are markdown. Cells run top to bottom as static initializers in a "
       "persistent process; redeclaring a name in a later cell shadows the earlier one. Values of expression cells are kept but "
-      "hidden. Useful helpers: zeno::plot(v), zeno::hist(v, bins), zeno::scatter(x, y), zeno::timeit(f), zeno::display(x), "
-      "zeno::read_csv(path), zeno::here() (gdb stack snapshot). Magic comment lines: //%timeit EXPR, //%flags -O3, //%link -lfoo or file.cpp.\n\n"
+      "hidden. Useful helpers: zeno::plot(v), zeno::hist(v, bins), zeno::scatter(x, y), TIMEIT(expr); (prints timing), zeno::timeit(f), zeno::display(x), "
+      "zeno::read_csv(path), zeno::here() (gdb stack snapshot). Magic comment lines: //%flags -O3, //%link -lfoo or file.cpp.\n\n"
       "To propose a change to an existing cell, reply with a fenced block whose info string is `cpp replace=<uid>`; to add a new "
       "cell after one, use `cpp after=<uid>` (the uid without brackets, e.g. `cpp replace=main.cpp:4`). The user applies them with one click. Keep cells small: one statement each. Be concise.\n\n"
       "Notebook outline (uids in brackets):\n" + outline_text(g_root, 10000);

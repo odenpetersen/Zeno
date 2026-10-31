@@ -327,6 +327,30 @@ inline std::ostream& operator<<(std::ostream& o, const bench& b) {
   if (b.cycles > 0) { std::snprintf(buf, sizeof buf, "; %.4g cycles, %.4g instr, IPC %.2f", b.cycles, b.instructions, b.ipc); o << buf; }
   return o;
 }
+// TIMEIT(expr); times expr and prints the result, like IPython's %timeit. It expands to a loop rather than a
+// lambda, so it works anywhere (top-level cells, main, any function) and sees locals without capturing them.
+// The timer hands out calibrated batches of iterations: grow the batch until it takes budget/10, then 7 runs.
+struct timer {
+  using clk = std::chrono::steady_clock;
+  const char* name; double budget; long n = 1, left = 0; int run = -1; clk::time_point t0 = clk::now(); std::vector<double> runs;
+  explicit timer(const char* name, double budget_s = 0.3) : name(name), budget(budget_s) {}
+  bool more() { return left-- > 0 || next(); }
+  bool next() {
+    double dt = std::chrono::duration<double>(clk::now() - t0).count();
+    if (run < 0) { if (dt > budget / 10 || n > (1L << 40)) { run = 0; perf_begin(); } else n *= 4; }
+    else if (runs.push_back(dt * 1e9 / n), ++run == 7) {
+      counters c = perf_end();
+      double m = std::accumulate(runs.begin(), runs.end(), 0.0) / 7, sd = 0, it = 7.0 * n;
+      for (double x : runs) sd += (x - m) * (x - m);
+      std::cout << bench{name, n, m, *std::min_element(runs.begin(), runs.end()), std::sqrt(sd / 7), c.cycles / it, c.instructions / it,
+                         c.cycles > 0 ? c.instructions / c.cycles : NAN} << std::endl;
+      return false;
+    }
+    left = n - 1; t0 = clk::now(); return true;   // this call hands out the batch's first iteration
+  }
+};
+struct sink { template <class T> friend void operator,(sink, T&& r) { asm volatile("" : : "r"(&r) : "memory"); } };   // keeps a result alive
+#define TIMEIT(...) for (::zeno::timer _zeno_timer(#__VA_ARGS__); _zeno_timer.more();) ::zeno::sink{}, (__VA_ARGS__)
 
 // ---------------------------------------------------------------- cell glue (used by generated code)
 struct nothing {};
