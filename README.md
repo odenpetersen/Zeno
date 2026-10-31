@@ -75,7 +75,7 @@ To try the bundled examples without installing: `make && ./zeno web examples/dem
   - instructions and IPC, cache misses and branch misses (hardware counters)
   - allocations and heap growth, peak stack, RSS
 - **Per cell:** run time.
-- **Benchmarks:** `TIMEIT(expr);` prints mean ± std per loop, with cycles and instructions, like `%timeit`. It is an ordinary macro (click it to see the loop it expands to), so it works in any function and sees locals. `zeno::timeit(f)` returns the numbers instead.
+- **Benchmarks:** `TIMEIT(expr)` times `expr` like `%timeit` and evaluates to a `zeno::bench`: mean ± std per loop, the 7 runs, min, cycles, instructions and IPC. A cell shows it straight away as a card (a line in the terminal); elsewhere `std::cout << TIMEIT(f(x))` prints it. It is an ordinary macro (click it to see the loop), so it sees locals without capturing them. It uses a GNU statement expression, so it can't initialize a namespace-scope variable; use `zeno::timeit([]{ return expr; })` there.
 - **Disassembly per cell:** `asm` in the cell toolbar. Hovering an instruction highlights its source line.
 - **Crashes** print a gdb backtrace with locals, pointing at the cell's file:line, then roll back.
 - **`zeno::here()`** prints a gdb snapshot of the stack with locals, like a breakpoint that keeps going.

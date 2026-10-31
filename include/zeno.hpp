@@ -301,7 +301,12 @@ table read_csv(const std::string& path, char sep = ',');
 template <class T = double> std::vector<T> linspace(T a, T b, std::size_t n) { std::vector<T> v(n); for (std::size_t i = 0; i < n; ++i) v[i] = a + (b - a) * T(i) / T(n > 1 ? n - 1 : 1); return v; }
 
 // ---------------------------------------------------------------- benchmarking
-struct bench { std::string name; long iters; double ns_mean, ns_min, ns_std, cycles, instructions, ipc; };
+// A timing: shown as a card in the browser, a line in the terminal, and printable with <<.
+struct bench {
+  std::string name; long iters; double ns_mean, ns_min, ns_std, cycles, instructions, ipc;
+  std::vector<double> runs;   // ns per loop in each of the 7 runs
+  void show() const;
+};
 template <class F> bench timeit(F&& f, std::string name = {}, double budget_s = 0.3) {
   auto once = [&] { if constexpr (std::is_void_v<decltype(f())>) f(); else { auto&& r = f(); asm volatile("" : : "r"(&r) : "memory"); } };
   using clk = std::chrono::steady_clock;
@@ -318,7 +323,7 @@ template <class F> bench timeit(F&& f, std::string name = {}, double budget_s = 
   for (double x : runs) sd += (x - m) * (x - m);
   double it = 7.0 * n;
   return {name, n, m, *std::min_element(runs.begin(), runs.end()), std::sqrt(sd / runs.size()),
-          c.cycles / it, c.instructions / it, c.cycles > 0 ? c.instructions / c.cycles : NAN};
+          c.cycles / it, c.instructions / it, c.cycles > 0 ? c.instructions / c.cycles : NAN, runs};
 }
 inline std::ostream& operator<<(std::ostream& o, const bench& b) {
   char buf[256];
@@ -327,12 +332,13 @@ inline std::ostream& operator<<(std::ostream& o, const bench& b) {
   if (b.cycles > 0) { std::snprintf(buf, sizeof buf, "; %.4g cycles, %.4g instr, IPC %.2f", b.cycles, b.instructions, b.ipc); o << buf; }
   return o;
 }
-// TIMEIT(expr); times expr and prints the result, like IPython's %timeit. It expands to a loop rather than a
-// lambda, so it works anywhere (top-level cells, main, any function) and sees locals without capturing them.
+// TIMEIT(expr) times expr like IPython's %timeit and evaluates to a zeno::bench, which a cell shows as a card.
+// It expands to a loop inside a GNU statement expression rather than a lambda, so it sees locals without
+// capturing them; it works in cells, main and any function, but not in a namespace-scope initializer.
 // The timer hands out calibrated batches of iterations: grow the batch until it takes budget/10, then 7 runs.
 struct timer {
   using clk = std::chrono::steady_clock;
-  const char* name; double budget; long n = 1, left = 0; int run = -1; clk::time_point t0 = clk::now(); std::vector<double> runs;
+  const char* name; double budget; long n = 1, left = 0; int run = -1; clk::time_point t0 = clk::now(); std::vector<double> runs; bench b;
   explicit timer(const char* name, double budget_s = 0.3) : name(name), budget(budget_s) {}
   bool more() { return left-- > 0 || next(); }
   bool next() {
@@ -342,28 +348,28 @@ struct timer {
       counters c = perf_end();
       double m = std::accumulate(runs.begin(), runs.end(), 0.0) / 7, sd = 0, it = 7.0 * n;
       for (double x : runs) sd += (x - m) * (x - m);
-      std::cout << bench{name, n, m, *std::min_element(runs.begin(), runs.end()), std::sqrt(sd / 7), c.cycles / it, c.instructions / it,
-                         c.cycles > 0 ? c.instructions / c.cycles : NAN} << std::endl;
+      b = {name, n, m, *std::min_element(runs.begin(), runs.end()), std::sqrt(sd / 7), c.cycles / it, c.instructions / it,
+           c.cycles > 0 ? c.instructions / c.cycles : NAN, runs};
       return false;
     }
     left = n - 1; t0 = clk::now(); return true;   // this call hands out the batch's first iteration
   }
 };
 struct sink { template <class T> friend void operator,(sink, T&& r) { asm volatile("" : : "r"(&r) : "memory"); } };   // keeps a result alive
-#define TIMEIT(...) for (::zeno::timer _zeno_timer(#__VA_ARGS__); _zeno_timer.more();) ::zeno::sink{}, (__VA_ARGS__)
+#define TIMEIT(...) ({ ::zeno::timer _zeno_timer(#__VA_ARGS__); while (_zeno_timer.more()) ::zeno::sink{}, (__VA_ARGS__); std::move(_zeno_timer.b); })
 
 // ---------------------------------------------------------------- cell glue (used by generated code)
 struct nothing {};
 template <class T> void display(const T& v) {
   if constexpr (std::is_same_v<T, nothing> || std::is_base_of_v<std::ios_base, T>) return;
-  else if constexpr (std::is_same_v<T, figure>) v.show();
+  else if constexpr (std::is_same_v<T, figure> || std::is_same_v<T, bench>) v.show();
   else { W w; node(w, v); emit("{\"ev\":\"display\",\"node\":" + w.s + "}"); }
 }
 int cell_begin(const char* uid);   // marks where a cell's output starts within a batch
 // A cell's value is not shown; the frontend gets a reference it can reveal on request.
 template <class T> int result(const char* uid, const T& v) {
   if constexpr (std::is_same_v<T, nothing> || std::is_base_of_v<std::ios_base, T>) return 0;
-  else if constexpr (std::is_same_v<T, figure>) { v.show(); return 0; }
+  else if constexpr (std::is_same_v<T, figure> || std::is_same_v<T, bench>) { v.show(); return 0; }   // shown, not hidden
   else {
     std::string o = "{\"ev\":\"result\",\"uid\":"; jstr(o, uid);
     o += ",\"t\":"; jstr(o, clean_type(type_of<T>()));

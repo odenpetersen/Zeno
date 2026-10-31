@@ -205,8 +205,7 @@ std::string fix_namespace(const std::string& text) {
 }  // namespace
 
 const std::set<std::string> kCtrl = {"if", "for", "while", "do", "switch", "return", "try", "break", "continue", "goto",
-                                     "throw", "co_return", "co_yield", "case", "default", "{",
-                                     "TIMEIT"};   // zeno.hpp's statement macro (a loop, not a value)
+                                     "throw", "co_return", "co_yield", "case", "default", "{"};
 
 Gen gen_batch(const std::vector<Src>& cells, int id) {
   Gen g;

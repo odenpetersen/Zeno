@@ -150,7 +150,7 @@ std::string results_text(const std::string& uid) {
     else if (ev == "result") o += "[value] " + e["t"].str() + "  (reveal ref " + e["ref"].str() + ")\n";
     else if (ev == "error") o += "[" + e["type"].str() + "] " + e["what"].str() + "\n";
     else if (ev == "crash") o += "[crash " + e["sig"].str() + "]\n" + e["bt"].str() + "\n";
-    else if (ev == "rich") o += "[" + e["mime"].str() + " output]\n";
+    else if (ev == "rich") o += e.has("text") ? e["text"].str() + "\n" : "[" + e["mime"].str() + " output]\n";
     else if (ev == "done" && e.has("why")) o += "[run rolled back: " + e["why"].str() + "]\n";
     else if (ev == "stats") o += "[stats] compile " + std::to_string((int)e["compile_ms"].num()) + " ms, run " + std::to_string(e["run_ms"].num()) + " ms\n";
   }
@@ -267,7 +267,7 @@ std::string chat_system(const std::string& focus) {
       "#includes form the hierarchy. Every top-level statement is a cell (declarations, function definitions, expression "
       "statements, if/for blocks). Comments on their own line are markdown. Cells run top to bottom as static initializers in a "
       "persistent process; redeclaring a name in a later cell shadows the earlier one. Values of expression cells are kept but "
-      "hidden. Useful helpers: zeno::plot(v), zeno::hist(v, bins), zeno::scatter(x, y), TIMEIT(expr); (prints timing), zeno::timeit(f), zeno::display(x), "
+      "hidden. Useful helpers: zeno::plot(v), zeno::hist(v, bins), zeno::scatter(x, y), TIMEIT(expr) (timing as a value, shown as a card), zeno::timeit(f), zeno::display(x), "
       "zeno::read_csv(path), zeno::here() (gdb stack snapshot). Magic comment lines: //%flags -O3, //%link -lfoo or file.cpp.\n\n"
       "To propose a change to an existing cell, reply with a fenced block whose info string is `cpp replace=<uid>`; to add a new "
       "cell after one, use `cpp after=<uid>` (the uid without brackets, e.g. `cpp replace=main.cpp:4`). The user applies them with one click. Keep cells small: one statement each. Be concise.\n\n"

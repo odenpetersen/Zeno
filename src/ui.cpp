@@ -119,6 +119,10 @@ textarea.ed{display:block;width:100%;box-sizing:border-box;margin:0;padding:6px 
 .lgrid .seg.pad{background:repeating-linear-gradient(135deg,var(--line) 0 2px,transparent 2px 6px);box-shadow:none;color:var(--ink3);text-align:center}
 .lgrid .seg.hi,table.lay tr.hi td{outline:2px solid var(--acc);outline-offset:-2px}
 .lsum{font-size:11px;color:var(--ink3);margin-bottom:4px}
+.bench{display:inline-block;border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin:4px 0;background:var(--panel)}
+.bench .bn{font:12px var(--mono);color:var(--ink3);max-width:560px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bench .bm{margin:2px 0}.bench .bm b{font-size:22px;font-weight:600}.bench .bm span{color:var(--ink2);margin-left:6px}
+.bench .chips{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:var(--ink3)}.bench .chips b{color:var(--ink);font-weight:500}
 .lsum b{color:var(--ink);font-weight:500}
 .toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:6px 14px;border-radius:8px;font-size:13px;z-index:9;opacity:0;transition:opacity .2s}
 .toast.on{opacity:.95}
@@ -646,7 +650,7 @@ async function previewTypes() {
   try {
     const p = await api('/api/preview');
     for (const [uid, text] of Object.entries(p.types || {})) {
-      const c = cells[uid]; if (!c || c.out.childElementCount) continue;
+      const c = cells[uid]; if (!c || c.out.childElementCount || batches[uid]) continue;   // ran (or running) meanwhile
       const m = /type = (?:class |struct )?([^\n{]*?)(?: \[with .*)?(?: :.*)?\s*(\{|$)/m.exec(text);
       const ptr = /\}\s*(\*+|&)\s*$/.exec(text.trim());
       const r = el('div', 'res preview'); r.innerHTML = '⤷ <span>' + esc((m ? m[1] : 'value').trim() + (ptr ? ' ' + ptr[1] : '')) + '</span> <i>not run</i> <b>layout</b>';
@@ -674,9 +678,24 @@ async function markDirty() {
   for (const u of order) { const c = cells[u]; c.el.classList.toggle('dirty', d.has(u)); c.el.querySelector('.gut .no').title = d.has(u) ? 'out of date: Sync will run it' : ''; }
 }
 // Renders one run's events into the cells; used for this page's runs and for runs started elsewhere (agents, other tabs).
+// TIMEIT's result: mean ± std per loop, the 7 runs as dots between the fastest and slowest, and counters.
+function benchCard(b) {
+  const t = ns => ns < 1e3 ? ns.toPrecision(3) + ' ns' : ns < 1e6 ? (ns / 1e3).toPrecision(3) + ' µs' : ns < 1e9 ? (ns / 1e6).toPrecision(3) + ' ms' : (ns / 1e9).toPrecision(3) + ' s';
+  const n = x => x >= 100 ? Math.round(x).toLocaleString() : x.toPrecision(3);
+  const c = el('div', 'bench'), W = 260, H = 26, lo = Math.min(...b.runs), hi = Math.max(...b.runs), X = v => 6 + (hi > lo ? (v - lo) / (hi - lo) : 0.5) * (W - 12);
+  c.innerHTML = '<div class="bn"></div><div class="bm"><b>' + t(b.mean) + '</b><span>± ' + t(b.std) + ' per loop</span></div>' +
+    '<svg width="' + W + '" height="' + (H + 12) + '" style="display:block;margin:4px 0"><line x1="6" x2="' + (W - 6) + '" y1="' + H / 2 + '" y2="' + H / 2 + '" stroke="var(--line)"/>' +
+    '<line x1="' + X(b.mean) + '" x2="' + X(b.mean) + '" y1="3" y2="' + (H - 3) + '" stroke="var(--ink3)" stroke-width="2"><title>mean ' + t(b.mean) + '</title></line>' +
+    b.runs.map((r, i) => '<circle cx="' + X(r) + '" cy="' + H / 2 + '" r="4.5" fill="var(--s1)" stroke="var(--panel)" stroke-width="2"><title>run ' + (i + 1) + ': ' + t(r) + ' per loop</title></circle>').join('') +
+    '<text x="6" y="' + (H + 10) + '" font-size="10" fill="var(--ink3)">' + t(lo) + '</text><text x="' + (W - 6) + '" y="' + (H + 10) + '" font-size="10" fill="var(--ink3)" text-anchor="end">' + t(hi) + '</text></svg>' +
+    '<div class="chips"><span>min <b>' + t(b.min) + '</b></span><span><b>7 × ' + b.iters.toLocaleString() + '</b> loops</span>' +
+    (b.cycles ? '<span><b>' + n(b.cycles) + '</b> cycles</span><span><b>' + n(b.instr) + '</b> instr</span><span>IPC <b>' + (b.ipc ?? 0).toFixed(2) + '</b></span>' : '') + '</div>';
+  c.querySelector('.bn').textContent = b.name;
+  return c;
+}
 function runHandler(show) {
   let cur = null, first = null, uids = [], marks = [];
-  const at = () => cellOut(cur || first) || $('#doc');
+  const at = () => { const o = cellOut(cur || first) || $('#doc'); o.querySelector(':scope > .preview')?.remove(); return o; };   // real output replaces the type preview
   const pre = (cls, text) => { const o = at(); let p = o.lastElementChild; if (!p || !p.classList.contains(cls)) { p = el('pre', cls); o.append(p); } p.insertAdjacentHTML('beforeend', ansi(text)); };
   return e => {
     switch (e.ev) {
@@ -692,6 +711,7 @@ function runHandler(show) {
       case 'compile': if (e.diag) placeDiag(e.diag, uids, e.ok); break;
       case 'result': {
         const o = cellOut(e.uid); if (!o) break;
+        o.querySelector(':scope > .preview')?.remove();
         const r = el('div', 'res'); r.innerHTML = '⤷ <span>' + esc(e.t) + '</span> <b>reveal</b>'; r.title = 'Show the value';
         r.onclick = async () => {
           if (r.nextElementSibling?.classList.contains('v')) { r.nextElementSibling.remove(); r.querySelector('b').textContent = 'reveal'; return; }
@@ -705,6 +725,7 @@ function runHandler(show) {
       case 'rich': {
         const d = el('div', 'rich');
         if (e.mime === 'image/svg+xml' || e.mime === 'text/html') d.innerHTML = e.data;
+        else if (e.mime === 'application/x-zeno-bench') d.append(benchCard(e.data));
         else d.innerHTML = '<pre class="so">' + (e.mime === 'text/x-stack' ? '<b>stack snapshot (gdb)</b>\n' : '') + ansi(e.data) + '</pre>';
         at().append(d); break;
       }

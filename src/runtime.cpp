@@ -4,6 +4,7 @@
 #include "common.hpp"
 #include "runtime.hpp"
 #include <cstring>
+#include <sstream>
 #include <cxxabi.h>
 #include <dlfcn.h>
 #include <link.h>
@@ -370,6 +371,15 @@ std::string render_braille(const figure& f) {
 }
 }  // namespace
 
+void bench::show() const {
+  if (!rt::web) { std::cout << *this << std::endl; return; }
+  std::ostringstream line; line << *this;
+  auto jnum = [](double x) { char b[32]; std::snprintf(b, sizeof b, "%.6g", x); return std::isfinite(x) ? std::string(b) : std::string("null"); };
+  std::string rs; for (double x : runs) rs += (rs.empty() ? "" : ",") + jnum(x);
+  emit("{\"ev\":\"rich\",\"mime\":\"application/x-zeno-bench\",\"text\":" + jq(line.str()) + ",\"data\":{\"name\":" + jq(name) +
+       ",\"iters\":" + std::to_string(iters) + ",\"mean\":" + jnum(ns_mean) + ",\"std\":" + jnum(ns_std) + ",\"min\":" + jnum(ns_min) +
+       ",\"cycles\":" + jnum(cycles) + ",\"instr\":" + jnum(instructions) + ",\"ipc\":" + jnum(ipc) + ",\"runs\":[" + rs + "]}}");
+}
 void figure::show() const {
   if (rt::web) svg(render_svg(*this));
   else emit("{\"ev\":\"rich\",\"mime\":\"text/x-ansi\",\"data\":" + jq(render_braille(*this)) + "}");
