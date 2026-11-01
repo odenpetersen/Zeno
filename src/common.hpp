@@ -53,6 +53,8 @@ bool find_cell(const std::string& root, const std::string& uid, Src& out, Item* 
 std::vector<Src> cells_under(const std::string& root, const std::string& prefix);   // every cell in a dir/file/section
 bool is_readonly(const std::string& root, const std::string& file);   // .zeno.json {"readonly": ["vendor/**", ...]}
 bool replace_cell(const std::string& root, const std::string& uid, const std::string& text, bool insert_after = false);
+bool replace_region(const std::string& root, const std::string& file, size_t b, size_t e, const std::string& orig, const std::string& text);
+std::string read_region(const std::string& root, const std::string& file, size_t b, size_t e);
 
 // ---------------------------------------------------------------- language model (any OpenAI-compatible server)
 struct Model { std::string url, model, key; };   // url: base such as http://host:8080/v1

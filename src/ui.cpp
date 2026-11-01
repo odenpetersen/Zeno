@@ -111,7 +111,7 @@ pre.diag{background:var(--code);max-height:320px;overflow:auto}
 .term{border-radius:6px;overflow:hidden;background:#111;padding:4px}
 textarea.ed{display:block;width:100%;box-sizing:border-box;margin:0;padding:6px 10px;background:var(--code);color:var(--ink);border:1px solid var(--s1);border-radius:6px;font:13px/1.45 var(--mono);white-space:pre;overflow:auto hidden;resize:none;tab-size:2;outline:none}
 .edhint{font-size:11px;color:var(--ink3);margin:2px 2px 0}
-.gh.focus{box-shadow:inset 0 0 0 1px var(--acc)}
+.gh.focus,.md.focus,.ccode.focus{box-shadow:inset 0 0 0 1px var(--acc);border-radius:6px}
 .lgrid{display:grid;gap:2px;justify-content:start;font:11px var(--mono);margin:6px 0 4px}
 .lgrid .off{color:var(--ink3);text-align:right;padding-right:6px;align-self:center;font-size:10px}
 .lgrid .seg{border-radius:4px;padding:2px 5px;min-height:18px;line-height:18px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--ink);background:color-mix(in srgb,var(--fc) 20%,transparent);box-shadow:inset 3px 0 var(--fc)}
@@ -154,7 +154,6 @@ canvas#heapmap{width:100%;height:90px;border-radius:6px;background:var(--code)}
  <button id="extract" style="display:none">Move selected to file…</button>
  <span class="sp"></span>
  <span id="branch"></span> <span id="status">idle</span>
- <button id="teditor" title="Which editor opens when you edit a cell (remembered in this browser)"></button>
  <button id="tchat">Assistant</button><button id="tvars">Variables</button><button id="theap">Heap</button>
 </header>
 <div id="wrap"><main id="doc"></main><aside id="side"></aside></div>
@@ -170,7 +169,7 @@ let ownWrite = 0, focusUid = null, selected = new Set(), batches = {}, busy = 0,
 function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('on'), 3000); }
 function setBusy(d) { busy += d; const s = $('#status'); s.classList.toggle('busy', busy > 0); s.textContent = busy > 0 ? 'running…' : 'idle'; }
 async function api(path, body) {
-  if (/cell|extract|term\/open/.test(path)) ownWrite = Date.now() + 600000;   // our own edits shouldn't announce themselves
+  if (/cell|extract|region|term\/open/.test(path)) ownWrite = Date.now() + 600000;   // our own edits shouldn't announce themselves
   const r = await fetch(path, {method: 'POST', headers: {'X-Token': TOKEN, 'Content-Type': 'application/json'}, body: JSON.stringify(body || {})});
   return r.headers.get('content-type')?.includes('json') ? r.json() : r.text();
 }
@@ -407,10 +406,12 @@ function nodeEl(n, name, depth) {
 // ---------------------------------------------------------------- document
 function saveCollapsed() { localStorage.setItem('zeno.collapsed', JSON.stringify([...collapsed])); }
 function countCells(n) { if (n.k === 'code') return 1; if (n.k === 'inc') return n.file ? countCells(n.file) : 0; return (n.kids || []).reduce((a, k) => a + countCells(k), 0); }
-function group(kind, id, title, kids, runTarget, extraCls, defaultClosed, ro) {
+// rng: {file, b, e}, the group's text in its file (a section, a function, a whole file), edited by Enter or e
+function group(kind, id, title, kids, runTarget, extraCls, defaultClosed, ro, rng) {
   const g = el('div', 'grp'), h = el('div', 'gh ' + kind + ' ' + (extraCls || '')), b = el('div', 'gb');
   const key = kind + ':' + id;
   g.dataset.key = key; g.dataset.dc = defaultClosed ? '1' : '';
+  h.dataset.nav = 'g:' + key; h.rng = rng && {...rng, ro};
   const closed = collapsed.has(key) || (defaultClosed && !collapsed.has('open:' + key));
   if (closed) g.classList.add('closed');
   const car = el('span', 'car', '›'), cnt = el('span', 'cnt');
@@ -438,24 +439,29 @@ function render(n, into) {
   } else if (k === 'file' || k === 'dir') {   // everything starts collapsed except the top of the document
     const saved = {...ctx}; if (k === 'file') { ctx.file = n.path; ctx.ro = !!n.ro; }
     const top = into === $('#doc');
-    into.append(group(k, n.id, n.title, n.kids, n.id, '', !top, n.ro));
+    into.append(group(k, n.id, n.title, n.kids, n.id, '', !top, n.ro, k === 'file' && {file: n.path, b: n.b, e: n.e}));
     ctx = saved;
-  } else if (k === 'sec') into.append(group('sec', n.id, n.title, n.kids, n.id, 'sec' + n.level, true));
-  else if (k === 'fn') into.append(group('fn', n.id, n.title, n.kids, null, '', true));
+  } else if (k === 'sec') into.append(group('sec', n.id, n.title, n.kids, n.id, 'sec' + n.level, true, ctx.ro, {file: ctx.file, b: n.b, e: n.e}));
+  else if (k === 'fn') into.append(group('fn', n.id, n.title, n.kids, null, '', true, ctx.ro, {file: ctx.file, b: n.b, e: n.e}));
   else if (k === 'inc') {
     if (n.dup) { into.append(el('div', 'ccode', n.text + '   // already included above')); return; }
     const saved = {...ctx}; ctx.file = n.file.path; ctx.ro = !!n.file.ro;
-    const g = group('inc', n.file.id, n.file.title, n.file.kids, n.file.id, '', true, n.file.ro);
+    const g = group('inc', n.file.id, n.file.title, n.file.kids, n.file.id, '', true, n.file.ro, {file: n.file.path, b: n.file.b, e: n.file.e});
     ctx = saved;
     into.append(g);
-  } else if (k === 'md') { const d = el('div', 'md'); d.innerHTML = markdown(n.text); into.append(d); }
-  else if (k === 'ccode') into.append(el('pre', 'ccode', n.text));
+  } else if (k === 'md' || k === 'ccode') {   // comments: selectable, and editable as their source text
+    const d = k === 'md' ? el('div', 'md') : el('pre', 'ccode', n.text);
+    if (k === 'md') d.innerHTML = markdown(n.text);
+    d.dataset.nav = 'm:' + ctx.file + ':' + n.b; d.rng = {file: ctx.file, b: n.b, e: n.e, ro: ctx.ro};
+    d.onclick = () => focusEl(d); d.ondblclick = () => editRange(d, false);
+    into.append(d);
+  }
   else if (k === 'code') into.append(cellEl(n));
 }
 function cellEl(n) {
   const c = el('div', 'cell'), gut = el('div', 'gut'), cm = el('div', 'cm'), pre = el('pre', 'code'), tools = el('div', 'tools');
   order.push(n.uid);
-  const info = cells[n.uid] = {uid: n.uid, text: n.text, line: n.line, file: ctx.file, nlines: n.text.split('\n').length, el: c, pre, exps: [], no: order.length};
+  const info = cells[n.uid] = {uid: n.uid, text: n.text, line: n.line, file: ctx.file, b: n.b, e: n.e, nlines: n.text.split('\n').length, el: c, pre, exps: [], no: order.length};
   c.dataset.uid = n.uid; c.tabIndex = -1;
   gut.append(el('span', 'no', '[' + order.length + ']'));
   const rb = el('button', 'run', '▶'); rb.title = 'Bring this cell up to date: runs it and anything out of date before it (Shift+Enter). Alt+click: run just this cell regardless.';
@@ -472,7 +478,7 @@ function cellEl(n) {
   c.addEventListener('click', () => { if (focusUid !== n.uid) focus(n.uid); });
   info.ro = ctx.ro;
   const acts = [['ask', () => askAbout(n.uid), 'Ask the assistant about this cell'], ['asm', () => showAsm(info), 'Disassembly of this cell']];
-  if (!ctx.ro) acts.unshift(['edit', () => edit(n.uid), 'Edit (Enter)']), acts.push(['+ below', () => insertBelow(n.uid), 'New cell below (b)'], ['delete', () => del(n.uid), 'Delete cell']);
+  if (!ctx.ro) acts.unshift(['edit', () => edit(n.uid), 'Edit here (Enter)'], [editorName, () => edit(n.uid, true), 'Edit in ' + editorName + ' (e)']), acts.push(['+ below', () => insertBelow(c), 'New cell below (b)'], ['delete', () => del(n.uid), 'Delete cell']);
   for (const [label, f, tip] of acts) {
     const b = el('button', '', label); b.title = tip; b.onclick = e => { e.stopPropagation(); f(); }; tools.append(b);
   }
@@ -525,7 +531,7 @@ async function load() {
   const r = await fetch('/api/tree', {headers: {'X-Token': TOKEN}});
   if (r.status === 403) { $('#doc').textContent = 'This server was started with --token: open the URL zeno printed (it carries the token).'; return; }
   const j = await r.json();
-  tree = j.tree; cells = {}; order = [];
+  tree = j.tree; cells = {}; order = []; editorName = j.editor || 'vim'; editorVim = j.vim !== false;
   carryState(tree);
   $('#title').textContent = j.root.split('/').filter(Boolean).pop() || 'Zeno';
   document.title = $('#title').textContent + ' — Zeno';
@@ -561,9 +567,9 @@ async function toggleMacro(c, at, collapse) {
 }
 
 // ---------------------------------------------------------------- focus, selection, keys
-// One thing is selected at a time: a cell (focusUid) or a group header (focusKey, the group's data-key).
+// One thing is selected at a time: a cell (focusUid), or a group header or comment (focusKey, its data-nav).
 let focusKey = null;
-function curEl() { return focusUid ? cells[focusUid]?.el : focusKey ? $('#doc').querySelector('.grp[data-key="' + CSS.escape(focusKey) + '"] > .gh') : null; }
+function curEl() { return focusUid ? cells[focusUid]?.el : focusKey ? $('#doc').querySelector('[data-nav="' + CSS.escape(focusKey) + '"]') : null; }
 function focus(uid) {
   curEl()?.classList.remove('focus');
   focusUid = uid; focusKey = null;
@@ -573,10 +579,10 @@ function focusEl(e) {
   if (!e) return;
   if (e.classList.contains('cell')) return focus(e.dataset.uid);
   curEl()?.classList.remove('focus');
-  focusUid = null; focusKey = e.parentElement.dataset.key;
+  focusUid = null; focusKey = e.dataset.nav;
   e.classList.add('focus'); e.scrollIntoView({block: 'nearest'});
 }
-const navItems = () => [...$('#doc').querySelectorAll('.cell,.gh')].filter(e => e.offsetParent !== null);
+const navItems = () => [...$('#doc').querySelectorAll('.cell,[data-nav]')].filter(e => e.offsetParent !== null);
 const parentHeader = e => (e.classList.contains('gh') ? e.parentElement : e).parentElement.closest('.grp')?.querySelector(':scope > .gh');
 function toggleSel(uid) {
   selected.has(uid) ? selected.delete(uid) : selected.add(uid);
@@ -594,7 +600,10 @@ document.addEventListener('keydown', e => {
     if (last) sync(last, gh ? null : last);
     if (!gh) focusEl(items[Math.min(i + 1, items.length - 1)]);
   }
-  else if (e.key === 'Enter' && cur) { e.preventDefault(); gh ? cur.click() : edit(focusUid); }
+  else if ((e.key === 'Enter' || e.key === 'e') && cur) {   // edit the cell, comment or whole section; e: in your editor
+    e.preventDefault();
+    if (focusUid) edit(focusUid, e.key === 'e'); else if (cur.rng) editRange(cur, e.key === 'e'); else if (gh) cur.click();
+  }
   else if (e.key === 'j' || e.key === 'ArrowDown') go(items[i < 0 ? 0 : Math.min(i + 1, items.length - 1)]);
   else if (e.key === 'k' || e.key === 'ArrowUp') go(items[Math.max(i - 1, 0)]);
   else if (e.key === 'h' || e.key === 'ArrowLeft') {   // fold an open group, else go up a level
@@ -608,8 +617,8 @@ document.addEventListener('keydown', e => {
   }
   else if (e.key === 'g') go(items[0]);
   else if (e.key === 'G') go(items[items.length - 1]);
-  else if (e.key === '?') toast('j/k move · h/l fold or unfold, up or into a level · Enter edit · Shift+Enter run · b new cell below · x select · g/G top/bottom');
-  else if (e.key === 'b' && focusUid) insertBelow(focusUid);
+  else if (e.key === '?') toast('j/k move · h/l fold or unfold, up or into a level · Enter edit (a section header: the whole section) · e same, in ' + editorName + ' · Shift+Enter run · b new cell below · x select · g/G top/bottom');
+  else if (e.key === 'b' && cur) insertBelow(cur);
   else if (e.key === 'x' && focusUid) toggleSel(focusUid);
   else if (e.key === 'Escape') { [...selected].forEach(toggleSel); }
 });
@@ -810,26 +819,64 @@ function showAsmData(a, uids, force) {
 }
 
 // ---------------------------------------------------------------- editing (a plain editor, or vim in a terminal inside the cell)
-let editor = localStorage.getItem('zeno.editor') === 'vim' ? 'vim' : 'plain';
-function showEditor() { $('#teditor').textContent = 'editor: ' + editor; }
-async function edit(uid) {
-  const c = cells[uid]; if (!c || c.editing) return;
+// Enter or a click edits in place; `e` opens the configured editor (ZENO_EDITOR / $EDITOR, default vim) in a terminal.
+let editorName = 'vim', editorVim = true;
+// An edit target is a cell (uid) or any byte range of a file: comments, a whole section or function, or an
+// empty range where new code goes. `node` is the element the editor temporarily replaces.
+async function edit(uid, term) {
+  const c = cells[uid]; if (!c) return;
   if (c.ro) { toast('read-only (listed in .zeno.json)'); return; }
-  editing++; c.editing = true;
-  try { showCell(uid); await (editor === 'vim' && window.Terminal ? editVim(c, uid) : editPlain(c, uid)); }
-  finally { c.editing = false; editing--; if (reloadPending && !editing) { reloadPending = false; load(); } }
+  showCell(uid);
+  return editTarget({key: uid, uid, node: c.pre, text: c.text}, term);
 }
-// A textarea in place of the cell. Ctrl+S or Ctrl+Enter saves, Shift+Enter saves and syncs, Esc cancels, Ctrl+Space asks the model.
-function editPlain(c, uid) {
+async function editRange(navEl, term) {
+  const r = navEl.rng; if (!r) return;
+  if (r.ro) { toast('read-only (listed in .zeno.json)'); return; }
+  const {text} = await api('/api/region', r);
+  const grp = navEl.classList.contains('gh') ? navEl.parentElement : null;
+  if (grp) { grp.classList.remove('closed'); grp.querySelector(':scope > .gb').style.display = 'none'; }   // the editor stands in for the group's body
+  return editTarget({key: r.file + ':' + r.b, file: r.file, b: r.b, e: r.e, node: navEl, keep: !!grp, text}, term);
+}
+async function insertBelow(navEl) {   // an empty editor after a cell, comment or group; nothing is written unless you type
+  const uid = navEl.classList.contains('cell') ? navEl.dataset.uid : null, r = uid ? cells[uid] : navEl.rng;
+  if (!r || r.ro) { toast(r ? 'read-only (listed in .zeno.json)' : 'nothing to insert after'); return; }
+  const ph = el('div'), after = navEl.classList.contains('gh') ? navEl.parentElement : navEl;
+  after.after(ph);
+  return editTarget({key: 'ins:' + r.file + ':' + r.e, file: r.file, b: r.e, e: r.e, node: ph, text: ''});
+}
+const openEdits = new Set();
+async function editTarget(t, term) {
+  if (openEdits.has(t.key)) return;
+  if (term && !window.Terminal) { toast('the terminal didn\'t load (offline?): using the plain editor'); term = false; }
+  openEdits.add(t.key); editing++;
+  try { await (term ? editTerm(t) : editPlain(t)); }
+  finally { openEdits.delete(t.key); editing--; if (reloadPending && !editing) { reloadPending = false; load(); } }
+}
+function mount(t, box) { if (t.keep) t.node.after(box); else t.node.replaceWith(box); }   // keep: a group header stays, the editor goes below it
+// After saving, select what was edited: the cell, or the cell new text became, or the comment/header.
+async function afterEdit(t, text, run) {
+  focusUid = t.uid || null; focusKey = t.uid ? null : focusKey; ownWrite = Date.now();
+  await load();
+  if (!t.uid && text) { const u = order.find(u => cells[u].file === t.file && cells[u].b >= t.b && text.includes(cells[u].text)); if (u) focus(u); }
+  if (run) t.uid ? sync(t.uid, t.uid) : focusUid ? sync(focusUid, focusUid) : sync('');
+}
+async function save(t, text) {
+  if (text === t.text) return true;
+  const r = t.uid ? await api('/api/cell', {action: 'replace', uid: t.uid, text}) : await api('/api/region', {file: t.file, b: t.b, e: t.e, orig: t.text, text});
+  if (!r.ok) toast(r.error || 'could not save');
+  return r.ok;
+}
+// A textarea in place of the target. Ctrl+S or Ctrl+Enter saves, Shift+Enter saves and syncs, Esc cancels, Ctrl+Space asks the model.
+function editPlain(t) {
   return new Promise(done => {
     const box = el('div'), ta = el('textarea', 'ed'), hint = el('div', 'edhint', 'Ctrl+S save · Shift+Enter save & sync · Esc cancel · Ctrl+Space complete');
-    ta.value = c.text; ta.spellcheck = false; box.append(ta, hint); c.pre.replaceWith(box);
+    ta.value = t.text; ta.spellcheck = false; box.append(ta, hint); mount(t, box);
     const fit = () => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 2 + 'px'; };
-    const put = t => { ta.setRangeText(t, ta.selectionStart, ta.selectionEnd, 'end'); fit(); };
-    const finish = async (save, run) => {
-      if (save && ta.value !== c.text) await api('/api/cell', {action: 'replace', uid, text: ta.value});
-      focusUid = uid; ownWrite = Date.now(); await load(); done();
-      if (run) sync(uid, uid);
+    const put = s => { ta.setRangeText(s, ta.selectionStart, ta.selectionEnd, 'end'); fit(); };
+    const finish = async (keep, run) => {
+      const text = ta.value.replace(/\s+$/, '');
+      if (keep && !(await save(t, text))) return;
+      await afterEdit(t, keep ? text : '', keep && run); done();
     };
     ta.oninput = fit;
     ta.onkeydown = async e => {
@@ -840,43 +887,38 @@ function editPlain(c, uid) {
       else if (e.key === 'Enter') { e.preventDefault(); const line = ta.value.slice(ta.value.lastIndexOf('\n', ta.selectionStart - 1) + 1, ta.selectionStart); put('\n' + /^\s*/.exec(line)[0]); }
       else if (ctl && e.key === ' ') {
         e.preventDefault(); const at = ta.selectionStart;
-        const {items} = await api('/api/complete', {uid, prefix: ta.value.slice(0, at), suffix: ta.value.slice(ta.selectionEnd)});
+        const {items} = await api('/api/complete', {uid: t.uid || '', prefix: ta.value.slice(0, at), suffix: ta.value.slice(ta.selectionEnd)});
         if (items && items.length) { ta.setRangeText(items[0], at, ta.selectionEnd, 'select'); fit(); } else toast('no suggestion');
       }
     };
     fit(); ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
   });
 }
-async function editVim(c, uid) {
-  const box = el('div', 'term'); c.pre.replaceWith(box);
-  const rows0 = Math.max(5, c.nlines + 1);
-  const t = new Terminal({rows: rows0, fontSize: 13, fontFamily: 'ui-monospace,SFMono-Regular,Menlo,Consolas,monospace', cursorBlink: true, theme: {background: '#111111'}});
-  const fit = new FitAddon.FitAddon(); t.loadAddon(fit); t.open(box);
+async function editTerm(t) {
+  const box = el('div', 'term'); mount(t, box);
+  const nlines = t.text.split('\n').length;
+  const rows0 = editorVim ? Math.max(5, nlines + 3) : Math.min(40, Math.max(12, nlines + 4));   // only vim reports its line count
+  const term = new Terminal({rows: rows0, fontSize: 13, fontFamily: 'ui-monospace,SFMono-Regular,Menlo,Consolas,monospace', cursorBlink: true, theme: {background: '#111111'}});
+  const fit = new FitAddon.FitAddon(); term.loadAddon(fit); term.open(box);
   const cols = () => (fit.proposeDimensions() || {cols: 100}).cols;
-  t.resize(cols(), rows0);
-  const {id} = await api('/api/term/open', {uid, rows: rows0, cols: cols()});
-  if (!(id > 0)) { t.dispose(); box.replaceWith(c.pre); toast('could not start vim; using the plain editor'); return editPlain(c, uid); }
-  // vim reports its line count via OSC 777 (see web.cpp); grow or shrink the terminal to fit
-  t.parser.registerOscHandler(777, data => {
+  term.resize(cols(), rows0);
+  const {id} = await api('/api/term/open', {...(t.uid ? {uid: t.uid} : {file: t.file, b: t.b, e: t.e}), rows: rows0, cols: cols()});
+  if (!(id > 0)) { term.dispose(); if (t.keep) box.remove(); else box.replaceWith(t.node); toast('could not start ' + editorName + '; using the plain editor'); return editPlain(t); }
+  // vim reports its line count via OSC 777 (see web.cpp); grow or shrink the terminal to fit, with 2 spare
+  // rows so a new line doesn't scroll the top one away before the terminal has grown
+  term.parser.registerOscHandler(777, data => {
     const m = /lines=(\d+)/.exec(data);
-    if (m) { const rows = Math.max(5, Math.min(60, +m[1] + 1)); if (rows !== t.rows) { t.resize(cols(), rows); api('/api/term/size', {id, rows, cols: cols()}); } }
+    if (m) { const rows = Math.max(5, Math.min(60, +m[1] + 3)); if (rows !== term.rows) { term.resize(cols(), rows); api('/api/term/size', {id, rows, cols: cols()}); } }
     return true;
   });
   let q = Promise.resolve();
-  t.onData(d => { q = q.then(() => fetch('/api/term/in?id=' + id, {method: 'POST', headers: {'X-Token': TOKEN}, body: d})); });
-  t.focus();
+  term.onData(d => { q = q.then(() => fetch('/api/term/in?id=' + id, {method: 'POST', headers: {'X-Token': TOKEN}, body: d})); });
+  term.focus();
   const r = await fetch('/api/term/out?id=' + id + '&token=' + TOKEN);
   const rd = r.body.getReader();
-  for (;;) { const {done, value} = await rd.read(); if (done) break; t.write(value); }
-  t.dispose(); focusUid = uid; ownWrite = Date.now();
-  await load();
-}
-async function insertBelow(uid) {
-  await api('/api/cell', {action: 'insert_after', uid, text: 'void(0);'});
-  const [f, i] = [uid.slice(0, uid.lastIndexOf(':')), +uid.slice(uid.lastIndexOf(':') + 1)];
-  const nu = f + ':' + (i + 1);
-  await load(); focus(nu); await edit(nu);
-  if (cells[nu] && cells[nu].text === 'void(0);') { await api('/api/cell', {action: 'delete', uid: nu}); load(); }
+  for (;;) { const {done, value} = await rd.read(); if (done) break; term.write(value); }
+  term.dispose();
+  await afterEdit(t, '', false);
 }
 async function del(uid) { if (!confirm('Delete this cell from ' + uid.split(':')[0] + '?')) return; await api('/api/cell', {action: 'delete', uid}); load(); }
 
@@ -994,8 +1036,6 @@ function side(mode) {
   sideMode = mode; s.classList.add('open'); refreshSide();
 }
 $('#tvars').onclick = () => side('vars');
-$('#teditor').onclick = () => { editor = editor === 'vim' ? 'plain' : 'vim'; localStorage.setItem('zeno.editor', editor); showEditor(); toast(editor === 'vim' ? 'cells open in vim (:wq saves)' : 'cells open in the plain editor'); };
-showEditor();
 $('#tchat').onclick = () => { chatFocus = null; side('chat'); };
 $('#theap').onclick = () => side('heap');
 $('#runall').onclick = async () => { await api('/api/restart'); Object.values(outs).forEach(o => o.textContent = ''); run('', 'group'); };

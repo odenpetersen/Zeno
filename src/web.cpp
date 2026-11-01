@@ -306,19 +306,25 @@ inoremap <Nul> <C-x><C-u>
 )vim";
 }
 
-// ---------------------------------------------------------------- vim in a pty
-struct Term { int master = -1; pid_t pid = -1; std::string file, uid, orig; };
+// ---------------------------------------------------------------- the configured editor in a pty
+// ZENO_EDITOR, else $EDITOR, else vim. Vim also gets model completion and reports its line count.
+std::string editor_cmd() {
+  for (const char* v : {"ZENO_EDITOR", "EDITOR"}) if (const char* e = getenv(v); e && *e) return e;
+  return "vim";
+}
+bool editor_is_vim() { std::string e = editor_cmd(); e = e.substr(0, e.find(' ')); e = e.substr(e.rfind('/') + 1); return e == "vim" || e == "vi" || e == "gvim"; }
+struct Term { int master = -1; pid_t pid = -1; std::string file, src, orig; size_t b = 0; };   // edits bytes [b, b+orig) of src
 std::map<int, std::shared_ptr<Term>> g_terms;
 std::mutex g_tmu;
 int g_next_term = 1;
 
-int open_term(const std::string& uid, int rows, int cols) {
-  Src s;
-  if (!find_cell(g_root, uid, s) || is_readonly(g_root, s.file)) return -1;
+int open_term(const std::string& src, size_t b, size_t e, const std::string& uid, int rows, int cols) {
+  if (is_readonly(g_root, src)) return -1;
   auto t = std::make_shared<Term>();
-  t->uid = uid; t->orig = s.code;
-  t->file = "/tmp/zeno-vim-" + std::to_string(getpid()) + "-" + std::to_string(g_next_term) + ".cpp";
-  write_file(t->file, s.code + "\n");
+  t->src = src; t->b = b; t->orig = read_region(g_root, src, b, e);
+  if (t->orig.size() != e - b) return -1;
+  t->file = "/tmp/zeno-edit-" + std::to_string(getpid()) + "-" + std::to_string(g_next_term) + ".cpp";
+  write_file(t->file, t->orig.empty() ? "" : t->orig + "\n");
   std::string vimrc = t->file + ".vim";
   write_file(vimrc, vim_completion_script(uid));
   winsize ws{(unsigned short)std::max(rows, 5), (unsigned short)std::max(cols, 20), 0, 0};   // vim crashes in tiny terminals
@@ -328,9 +334,13 @@ int open_term(const std::string& uid, int rows, int cols) {
     setenv("TERM", "xterm-256color", 1);
     // Report the buffer's line count with an OSC sequence so the page can size the terminal to fit.
     const char* report = "call echoraw(printf(\"\\e]777;lines=%d\\x07\", line('$')))";
-    std::string au = std::string("autocmd TextChanged,TextChangedI,VimResized,BufWinEnter * ") + report;
-    const char* ed = getenv("ZENO_VIM") ? getenv("ZENO_VIM") : "vim";
-    execlp(ed, ed, "-S", vimrc.c_str(), "-c", "set laststatus=0 noruler shortmess+=FI fillchars+=eob:\\ ", "-c", au.c_str(), "-c", report, t->file.c_str(), (char*)nullptr);
+    // After the page grows the terminal, scroll back to the top if the whole buffer now fits.
+    std::string au = std::string("autocmd TextChanged,TextChangedI,VimResized,BufWinEnter * ") + report +
+                     " | if line('$') < winheight(0) | call winrestview({'topline': 1}) | endif";
+    std::string ed = editor_cmd() + " \"$@\"";   // the command may carry arguments, e.g. "nano -l"
+    if (editor_is_vim())
+      execl("/bin/sh", "sh", "-c", ed.c_str(), "zeno", "-S", vimrc.c_str(), "-c", "set laststatus=0 noruler shortmess+=FI fillchars+=eob:\\ ", "-c", au.c_str(), "-c", report, t->file.c_str(), (char*)nullptr);
+    else execl("/bin/sh", "sh", "-c", ed.c_str(), "zeno", t->file.c_str(), (char*)nullptr);
     _exit(127);
   }
   t->pid = pid;
@@ -358,7 +368,7 @@ void term_stream(int fd, std::shared_ptr<Term> t, int id) {
   close(t->master);
   std::string text = read_file(t->file);
   while (!text.empty() && text.back() == '\n') text.pop_back();
-  if (text != t->orig) replace_cell(g_root, t->uid, text);
+  if (text != t->orig) replace_region(g_root, t->src, t->b, t->b + t->orig.size(), t->orig, text);
   unlink(t->file.c_str());
   unlink((t->file + ".vim").c_str());
   std::lock_guard<std::mutex> l(g_tmu);
@@ -374,7 +384,10 @@ void handle(int fd) {
   if (!g_token.empty() && tok != g_token) { respond(fd, 403, "text/plain", "bad token: open the URL printed by zeno"); close(fd); return; }
   J b = J::parse(r.body.empty() ? "{}" : r.body);
   const std::string& p = r.path;
-  if (p == "/api/tree") respond(fd, 200, "application/json", "{\"root\":" + jq(g_root) + ",\"tree\":" + project_json(g_root) + "}");
+  if (p == "/api/tree") {
+    std::string ed = editor_cmd(); ed = ed.substr(0, ed.find(' ')); ed = ed.substr(ed.rfind('/') + 1);
+    respond(fd, 200, "application/json", "{\"root\":" + jq(g_root) + ",\"editor\":" + jq(ed) + ",\"vim\":" + (editor_is_vim() ? "true" : "false") + ",\"tree\":" + project_json(g_root) + "}");
+  }
   else if (p == "/api/run") {   // {target: uid | group id | "", kind: cell | group, origin}
     std::string target = b["target"].str();
     std::vector<Src> cells;
@@ -529,6 +542,14 @@ void handle(int fd) {
     g_k.stop(); g_k.start(); g_hist.clear(); g_hist_unknown = false;
     respond(fd, 200, "application/json", "{}");
   }
+  else if (p == "/api/region") {   // {file, b, e} -> {text}; with {orig, text}: replace the range
+    std::string file = b["file"].str(); size_t rb = b["b"].num(), re = b["e"].num();
+    if (!b.has("text")) respond(fd, 200, "application/json", "{\"text\":" + jq(read_region(g_root, file, rb, re)) + ",\"ro\":" + (is_readonly(g_root, file) ? "true" : "false") + "}");
+    else {
+      bool ok = replace_region(g_root, file, rb, re, b["orig"].str(), b["text"].str());
+      respond(fd, ok ? 200 : 409, "application/json", std::string("{\"ok\":") + (ok ? "true}" : "false,\"error\":\"the file changed meanwhile, or is read-only\"}"));
+    }
+  }
   else if (p == "/api/cell") {   // {action: replace|insert_after|delete, uid, text}
     std::string a = b["action"].str();
     bool ok = replace_cell(g_root, b["uid"].str(), a == "delete" ? "" : b["text"].str(), a == "insert_after");
@@ -548,8 +569,11 @@ void handle(int fd) {
     replace_cell(g_root, cells[0].first.uid, "#include \"" + name + "\"");
     respond(fd, 200, "application/json", "{\"ok\":true}");
   }
-  else if (p == "/api/term/open") {
-    int id = open_term(b["uid"].str(), (int)b["rows"].num(8), (int)b["cols"].num(100));
+  else if (p == "/api/term/open") {   // {uid} or {file, b, e}: a cell, or any range of a file (comments, a section, nothing)
+    std::string file = b["file"].str(), uid = b["uid"].str(); size_t rb = b["b"].num(), re = b["e"].num();
+    Src s; Item it;
+    if (!uid.empty()) { if (find_cell(g_root, uid, s, &it)) { file = s.file; rb = it.b; re = it.e; } else file.clear(); }
+    int id = file.empty() ? -1 : open_term(file, rb, re, uid, (int)b["rows"].num(8), (int)b["cols"].num(100));
     respond(fd, id > 0 ? 200 : 400, "application/json", "{\"id\":" + std::to_string(id) + "}");
   }
   else if (p == "/api/term/out") { if (auto t = term(r.q["id"])) term_stream(fd, t, std::atoi(r.q["id"].c_str())); else respond(fd, 404, "text/plain", ""); }

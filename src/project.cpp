@@ -90,27 +90,30 @@ std::string file_json(const fs::path& root, const fs::path& f, std::set<fs::path
   seen.insert(fs::weakly_canonical(f));
   auto items = items_of(f);
   // a stack of open sections; each holds its JSON children so far
-  struct Sec { int level; std::string head, kids; };
-  std::vector<Sec> st{{0, "", ""}};
+  // Every node carries its byte range [b, e) in the file, so the page can edit a comment, a section or a function as text.
+  struct Sec { int level; std::string head, kids; size_t b; };
+  std::vector<Sec> st{{0, "", "", 0}};
   auto add = [&](const std::string& j) { auto& k = st.back().kids; k += (k.empty() ? "" : ",") + j; };
-  auto close = [&] { Sec s = st.back(); st.pop_back(); add(s.head + s.kids + "]}"); };
+  auto range = [](size_t b, size_t e) { return ",\"b\":" + std::to_string(b) + ",\"e\":" + std::to_string(e); };
+  auto close = [&](size_t e) { Sec s = st.back(); st.pop_back(); add(s.head + s.kids + "]" + range(s.b, std::max(e, s.b)) + "}"); };
+  auto prev_e = [&](size_t i) { return i ? items[i - 1].e : 0; };
   int code = 0;
   for (size_t i = 0; i < items.size(); ++i) {
     auto& it = items[i];
     if (it.kind == "fn") {   // main(): a group titled by its signature; sections inside it stay inside it
-      st.push_back({1000, "{\"k\":\"fn\",\"id\":" + jq(r + "#" + std::to_string(it.line)) + ",\"title\":" + jq(it.text) + ",\"line\":" + std::to_string(it.line) + ",\"kids\":[", ""});
+      st.push_back({1000, "{\"k\":\"fn\",\"id\":" + jq(r + "#" + std::to_string(it.line)) + ",\"title\":" + jq(it.text) + ",\"line\":" + std::to_string(it.line) + ",\"kids\":[", "", it.b});
       continue;
     }
-    if (it.kind == "endfn") { while (st.size() > 1 && st.back().level != 1000) close(); if (st.size() > 1) close(); continue; }
+    if (it.kind == "endfn") { while (st.size() > 1 && st.back().level != 1000) close(prev_e(i)); if (st.size() > 1) close(it.e); continue; }
     if (it.kind == "md" && it.level > 0) {
-      while (st.size() > 1 && st.back().level >= it.level && st.back().level != 1000) close();
+      while (st.size() > 1 && st.back().level >= it.level && st.back().level != 1000) close(prev_e(i));
       size_t nl = it.text.find('\n');
       std::string title = it.text.substr(it.level, nl == std::string::npos ? std::string::npos : nl - it.level);
       title.erase(0, title.find_first_not_of(' '));
-      st.push_back({it.level, "{\"k\":\"sec\",\"id\":" + jq(r + "@" + std::to_string(i)) + ",\"title\":" + jq(title) + ",\"level\":" + std::to_string(it.level) + ",\"kids\":[", ""});
+      st.push_back({it.level, "{\"k\":\"sec\",\"id\":" + jq(r + "@" + std::to_string(i)) + ",\"title\":" + jq(title) + ",\"level\":" + std::to_string(it.level) + ",\"kids\":[", "", it.b});
       std::string rest = nl == std::string::npos ? "" : it.text.substr(nl + 1);
       rest.erase(0, rest.find_first_not_of('\n'));
-      if (!rest.empty()) add("{\"k\":\"md\",\"text\":" + jq(rest) + "}");
+      if (!rest.empty()) add("{\"k\":\"md\",\"text\":" + jq(rest) + range(it.b, it.e) + "}");
       continue;
     }
     fs::path inc = follow && it.kind == "code" ? local_include(root, f, it.text) : fs::path();
@@ -124,12 +127,12 @@ std::string file_json(const fs::path& root, const fs::path& f, std::set<fs::path
       continue;
     }
     if (it.kind == "code")
-      add("{\"k\":\"code\",\"uid\":" + jq(r + ":" + std::to_string(code++)) + ",\"line\":" + std::to_string(it.line) + ",\"text\":" + jq(it.text) + "}");
-    else add("{\"k\":" + jq(it.kind) + ",\"line\":" + std::to_string(it.line) + ",\"text\":" + jq(it.text) + "}");
+      add("{\"k\":\"code\",\"uid\":" + jq(r + ":" + std::to_string(code++)) + ",\"line\":" + std::to_string(it.line) + ",\"text\":" + jq(it.text) + range(it.b, it.e) + "}");
+    else add("{\"k\":" + jq(it.kind) + ",\"line\":" + std::to_string(it.line) + ",\"text\":" + jq(it.text) + range(it.b, it.e) + "}");
   }
-  while (st.size() > 1) close();
+  while (st.size() > 1) close(items.empty() ? 0 : items.back().e);
   return "{\"k\":\"file\",\"id\":" + jq(r) + ",\"title\":" + jq(title_of(f.filename().string())) + ",\"path\":" + jq(fs::absolute(f).string()) +
-         (is_readonly(root.string(), f.string()) ? ",\"ro\":true" : "") + ",\"kids\":[" + st[0].kids + "]}";
+         (is_readonly(root.string(), f.string()) ? ",\"ro\":true" : "") + range(0, fs::file_size(f)) + ",\"kids\":[" + st[0].kids + "]}";
 }
 std::string node_json(const fs::path& root, const fs::path& p) {
   std::set<fs::path> seen;
@@ -242,6 +245,25 @@ bool replace_cell(const std::string& root, const std::string& uid, const std::st
     body.erase(it.b, e - it.b);
   } else body.replace(it.b, it.e - it.b, text);
   return write_file(s.file, body);
+}
+
+// Edit bytes [b, e) of a project file as text, if they still read `orig`. An empty range inserts a new
+// paragraph there; empty text deletes the range and the blank line it leaves.
+bool replace_region(const std::string& root, const std::string& file, size_t b, size_t e, const std::string& orig, const std::string& text) {
+  fs::path base = base_of(fs::absolute(root).lexically_normal()), f = fs::absolute(file).lexically_normal();
+  if (f.string().rfind(base.string(), 0) != 0 || is_readonly(root, f.string())) return false;
+  std::string body = read_file(f.string());
+  if (b > e || e > body.size() || body.compare(b, e - b, orig) != 0) return false;   // changed underneath us
+  if (b == e) { if (text.empty()) return true; body.insert(b, b == 0 ? text + "\n\n" : "\n\n" + text); }
+  else if (text.empty()) { while (e < body.size() && (body[e] == '\n' || body[e] == ' ')) { bool nl = body[e] == '\n'; ++e; if (nl) break; } body.erase(b, e - b); }
+  else body.replace(b, e - b, text);
+  return write_file(f.string(), body);
+}
+std::string read_region(const std::string& root, const std::string& file, size_t b, size_t e) {
+  fs::path base = base_of(fs::absolute(root).lexically_normal()), f = fs::absolute(file).lexically_normal();
+  if (f.string().rfind(base.string(), 0) != 0) return "";
+  std::string body = read_file(f.string());
+  return b <= e && e <= body.size() ? body.substr(b, e - b) : "";
 }
 
 // A compact outline for prompts and agents: headings, includes, and each cell's uid with its first line.
