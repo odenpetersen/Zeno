@@ -261,7 +261,7 @@ Plan make_plan(const std::string& upto) {
 }
 
 // ---------------------------------------------------------------- assistant
-std::string chat_system(const std::string& focus) {
+std::string chat_system(const std::string& focus, const J& range) {
   std::string sys =
       "You are the assistant inside zeno, a C++ notebook. A notebook is a folder of ordinary C++ files; the entry file's local "
       "#includes form the hierarchy. Every top-level statement is a cell (declarations, function definitions, expression "
@@ -275,6 +275,17 @@ std::string chat_system(const std::string& focus) {
   Src c;
   if (!focus.empty() && find_cell(g_root, focus, c))
     sys += "\nThe user is looking at cell [" + focus + "]:\n```cpp\n" + c.code + "\n```\nIts last run:\n" + results_text(focus) + "\n";
+  if (range.has("file")) {   // a selected comment, section, function or file, to be rewritten as a whole
+    std::string file = range["file"].str(), body = read_file(file);
+    size_t b = range["b"].num(), e = range["e"].num();
+    if (b <= e && e <= body.size()) {
+      int l0 = 1 + std::count(body.begin(), body.begin() + b, '\n'), l1 = l0 + std::count(body.begin() + b, body.begin() + e, '\n');
+      std::string rel = std::filesystem::relative(file, std::filesystem::absolute(g_root)).string();
+      sys += "\nThe user selected lines " + std::to_string(l0) + "-" + std::to_string(l1) + " of " + rel + " for you to edit:\n```cpp\n" + body.substr(b, e - b) +
+             "\n```\nTo change it, reply with one fenced block whose info string is `cpp replace=selection`, holding the complete new text "
+             "of the selection (prose stays as // comment lines, which render as markdown). Use that rather than per-cell edits.\n";
+    }
+  }
   return sys;
 }
 
@@ -506,9 +517,9 @@ void handle(int fd) {
     if (r.method == "POST" && b.has("url")) { m = {b["url"].str(), b["model"].str(), b.has("key") ? b["key"].str() : m.key}; save_model_config(m); }
     respond(fd, 200, "application/json", "{\"url\":" + jq(m.url) + ",\"model\":" + jq(m.model) + ",\"has_key\":" + (m.key.empty() ? "false" : "true") + "}");
   }
-  else if (p == "/api/chat") {   // {messages: [{role, content}], focus: uid}; streams {ev: delta, s}
+  else if (p == "/api/chat") {   // {messages: [{role, content}], focus: uid, range: {file, b, e}}; streams {ev: delta, s}
     Stream st(fd, "application/x-ndjson");
-    std::string msgs = "[{\"role\":\"system\",\"content\":" + jq(chat_system(b["focus"].str())) + "}";
+    std::string msgs = "[{\"role\":\"system\",\"content\":" + jq(chat_system(b["focus"].str(), b["range"])) + "}";
     for (auto& m : b["messages"].a) msgs += ",{\"role\":" + jq(m["role"].str()) + ",\"content\":" + jq(m["content"].str()) + "}";
     bool told = false;
     chat(msgs + "]", [&](const std::string& d) { st.chunk("{\"ev\":\"delta\",\"s\":" + jq(d) + "}\n"); }, 0, true,
@@ -546,8 +557,9 @@ void handle(int fd) {
     std::string file = b["file"].str(); size_t rb = b["b"].num(), re = b["e"].num();
     if (!b.has("text")) respond(fd, 200, "application/json", "{\"text\":" + jq(read_region(g_root, file, rb, re)) + ",\"ro\":" + (is_readonly(g_root, file) ? "true" : "false") + "}");
     else {
-      bool ok = replace_region(g_root, file, rb, re, b["orig"].str(), b["text"].str());
-      respond(fd, ok ? 200 : 409, "application/json", std::string("{\"ok\":") + (ok ? "true}" : "false,\"error\":\"the file changed meanwhile, or is read-only\"}"));
+      std::string removed;
+      bool ok = replace_region(g_root, file, rb, re, b["orig"].str(), b["text"].str(), b["before"].b, b["raw"].b, &removed);
+      respond(fd, ok ? 200 : 409, "application/json", ok ? "{\"ok\":true,\"removed\":" + jq(removed) + "}" : "{\"ok\":false,\"error\":\"the file changed meanwhile, or is read-only\"}");
     }
   }
   else if (p == "/api/cell") {   // {action: replace|insert_after|delete, uid, text}

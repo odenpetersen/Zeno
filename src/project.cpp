@@ -248,14 +248,18 @@ bool replace_cell(const std::string& root, const std::string& uid, const std::st
 }
 
 // Edit bytes [b, e) of a project file as text, if they still read `orig`. An empty range inserts a new
-// paragraph there; empty text deletes the range and the blank line it leaves.
-bool replace_region(const std::string& root, const std::string& file, size_t b, size_t e, const std::string& orig, const std::string& text) {
+// paragraph there (`before`: ahead of what follows b; `raw`: exactly `text`); empty text deletes the range and the blank line it leaves.
+bool replace_region(const std::string& root, const std::string& file, size_t b, size_t e, const std::string& orig, const std::string& text, bool before, bool raw, std::string* removed) {
   fs::path base = base_of(fs::absolute(root).lexically_normal()), f = fs::absolute(file).lexically_normal();
   if (f.string().rfind(base.string(), 0) != 0 || is_readonly(root, f.string())) return false;
   std::string body = read_file(f.string());
   if (b > e || e > body.size() || body.compare(b, e - b, orig) != 0) return false;   // changed underneath us
-  if (b == e) { if (text.empty()) return true; body.insert(b, b == 0 ? text + "\n\n" : "\n\n" + text); }
-  else if (text.empty()) { while (e < body.size() && (body[e] == '\n' || body[e] == ' ')) { bool nl = body[e] == '\n'; ++e; if (nl) break; } body.erase(b, e - b); }
+  if (b == e) { if (text.empty()) return true; body.insert(b, raw ? text : b == 0 || before ? text + "\n\n" : "\n\n" + text); }   // a new paragraph before or after b
+  else if (text.empty()) {
+    while (e < body.size() && (body[e] == '\n' || body[e] == ' ')) { bool nl = body[e] == '\n'; ++e; if (nl) break; }
+    if (removed) *removed = body.substr(b, e - b);   // exactly what went, so `raw` can put it back
+    body.erase(b, e - b);
+  }
   else body.replace(b, e - b, text);
   return write_file(f.string(), body);
 }

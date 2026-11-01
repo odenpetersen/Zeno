@@ -88,8 +88,13 @@ To try the bundled examples without installing: `make && ./zeno web examples/dem
 
 ## Editing, git, hot reload
 
-- **Keys:** one thing is selected at a time: a cell, a comment or a group header. `j`/`k` (or ↓/↑) move, `h`/`l` (or ←/→) fold and unfold groups and move up or into a level, `g`/`G` jump to the top or bottom, Shift+Enter runs a cell (on a group, everything in it), `b` opens an empty editor below, `x` multi-selects, `?` lists the keys.
-- **Editing:** Enter (or a click on code, or a double-click on a comment) edits the selection in place. On a cell that's the cell; on a comment, its `//` source; on a section, function or file header, all of it in one buffer. Ctrl+S saves, Shift+Enter saves and syncs, Esc cancels, Ctrl+Space asks the model for a completion. Saving writes exactly that range of the file, and refuses if the file changed underneath. In the terminal REPL, `.edit N` opens `$EDITOR`.
+- **Keys:** one thing is selected at a time: a cell, a comment or a group header.
+  - `j`/`k` (or ↓/↑) move; ←/→ (or `h`) fold and unfold groups and move up or into a level; `g`/`G` jump to the top or bottom.
+  - Enter edits the selection in place, `e` in your editor; Shift+Enter runs a cell (on a group, everything in it).
+  - `l` shows or hides a cell's value (its memory layout, for a struct), `a` its assembly.
+  - `o`/`O` open an empty editor below/above, `dd` deletes a cell or comment, `u` undoes the last delete.
+  - `c` hands the selection to the assistant; `x` multi-selects; `?` lists the keys.
+- **Editing:** Enter (or a click on code, or a double-click on a comment) edits the selection in place. On a cell that's the cell; on a comment, its `//` source; on a section, function or file header, all of it in one buffer. Esc or clicking away saves, Shift+Enter saves and syncs, Ctrl+Space asks the model for a completion. Saving writes exactly that range of the file, and refuses if the file changed underneath. In the terminal REPL, `.edit N` opens `$EDITOR`.
 - **Your editor:** `e` does the same in your editor, running in a terminal embedded in the page: `ZENO_EDITOR`, else `$EDITOR`, else vim. Vim also gets model completion on Ctrl-Space and a terminal that grows with the buffer (vim reports its line count through an escape sequence).
 - **Hot reload:** files changed on disk by an editor, a coding agent or git reload in place. Outputs stay with the right cells: cell lists are aligned diff-style, so inserting a cell doesn't misattribute outputs. Edited cells keep their old output, marked stale.
 - **Git:** the header shows the branch, and cells that differ from HEAD get a change bar.
@@ -98,7 +103,7 @@ To try the bundled examples without installing: `make && ./zeno web examples/dem
 
 ## Language models
 
-The **Assistant** panel (and `ask` on any cell) chats about the notebook. It sees the outline, the focused cell and its last output. Proposed edits arrive as code blocks with **Apply** buttons. It works with any OpenAI-compatible server: llama.cpp, Ollama, vLLM, LM Studio, OpenRouter, OpenAI.
+The **Assistant** panel chats about the notebook. It sees the outline, the focused cell and its last output. `c` on a cell, comment or section shows that selection as source and asks the assistant to rewrite it; its proposal arrives as a code block with an **Apply** button that replaces exactly that range. It works with any OpenAI-compatible server: llama.cpp, Ollama, vLLM, LM Studio, OpenRouter, OpenAI.
 
 Autocomplete asks thinking models (Gemma, Qwen3…) to skip reasoning with `chat_template_kwargs`, which llama.cpp, vLLM and Ollama understand; servers that reject the field get a plain retry. The chat keeps reasoning on and shows "thinking…" meanwhile.
 

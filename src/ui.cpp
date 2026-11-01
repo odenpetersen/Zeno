@@ -118,6 +118,8 @@ textarea.ed{display:block;width:100%;box-sizing:border-box;margin:0;padding:6px 
 .lgrid .seg.cont{box-shadow:none}
 .lgrid .seg.pad{background:repeating-linear-gradient(135deg,var(--line) 0 2px,transparent 2px 6px);box-shadow:none;color:var(--ink3);text-align:center}
 .lgrid .seg.hi,table.lay tr.hi td{outline:2px solid var(--acc);outline-offset:-2px}
+.cell.chatsel pre.code,pre.chatsrc{box-shadow:0 0 0 2px var(--s7)}
+pre.chatsrc{margin:4px 0}
 .lsum{font-size:11px;color:var(--ink3);margin-bottom:4px}
 .bench{display:inline-block;border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin:4px 0;background:var(--panel)}
 .bench .bn{font:12px var(--mono);color:var(--ink3);max-width:560px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -477,8 +479,8 @@ function cellEl(n) {
   };
   c.addEventListener('click', () => { if (focusUid !== n.uid) focus(n.uid); });
   info.ro = ctx.ro;
-  const acts = [['ask', () => askAbout(n.uid), 'Ask the assistant about this cell'], ['asm', () => showAsm(info), 'Disassembly of this cell']];
-  if (!ctx.ro) acts.unshift(['edit', () => edit(n.uid), 'Edit here (Enter)'], [editorName, () => edit(n.uid, true), 'Edit in ' + editorName + ' (e)']), acts.push(['+ below', () => insertBelow(c), 'New cell below (b)'], ['delete', () => del(n.uid), 'Delete cell']);
+  const acts = [['ask', () => chatOn(c), 'Have the assistant edit this cell (c)'], ['asm', () => showAsm(info), 'Disassembly of this cell']];
+  if (!ctx.ro) acts.unshift(['edit', () => edit(n.uid), 'Edit here (Enter)'], [editorName, () => edit(n.uid, true), 'Edit in ' + editorName + ' (e)']), acts.push(['+ below', () => insertAt(c), 'New cell below (o; O for above)'], ['delete', () => del(n.uid), 'Delete cell']);
   for (const [label, f, tip] of acts) {
     const b = el('button', '', label); b.title = tip; b.onclick = e => { e.stopPropagation(); f(); }; tools.append(b);
   }
@@ -545,6 +547,7 @@ async function load() {
     card.append(b); doc.append(card);
   }
   curEl()?.classList.add('focus');
+  showChatSrc();
   loadMacros(); markDirty(); gitMarks(); previewTypes();
 }
 async function loadMacros() {
@@ -590,6 +593,7 @@ function toggleSel(uid) {
   $('#extract').style.display = selected.size ? '' : 'none';
   $('#extract').textContent = 'Move ' + selected.size + ' selected to file…';
 }
+let lastD = 0, lastDeleted = null;
 document.addEventListener('keydown', e => {
   if (e.target.closest('.term,input,textarea,aside') || e.ctrlKey || e.metaKey || e.altKey) return;
   const items = navItems(), cur = curEl(), i = items.indexOf(cur), gh = cur?.classList.contains('gh');
@@ -606,19 +610,24 @@ document.addEventListener('keydown', e => {
   }
   else if (e.key === 'j' || e.key === 'ArrowDown') go(items[i < 0 ? 0 : Math.min(i + 1, items.length - 1)]);
   else if (e.key === 'k' || e.key === 'ArrowUp') go(items[Math.max(i - 1, 0)]);
+  else if (e.key === 'l' && focusUid) toggleValue(cells[focusUid]);
+  else if (e.key === 'a' && focusUid) showAsm(cells[focusUid]);
+  else if ((e.key === 'o' || e.key === 'O') && cur) insertAt(cur, e.key === 'O');
+  else if (e.key === 'd' && cur) { if (Date.now() - lastD < 600) { lastD = 0; deleteSel(cur); } else lastD = Date.now(); }
+  else if (e.key === 'u') undoDelete();
+  else if (e.key === 'c' && cur) { e.preventDefault(); chatOn(cur); }
   else if (e.key === 'h' || e.key === 'ArrowLeft') {   // fold an open group, else go up a level
     e.preventDefault();
     if (gh && !cur.parentElement.classList.contains('closed')) cur.click(); else focusEl(cur && parentHeader(cur));
   }
-  else if (e.key === 'l' || e.key === 'ArrowRight') {   // unfold a group, else step into it
+  else if (e.key === 'ArrowRight') {   // unfold a group, else step into it
     e.preventDefault();
     if (!gh) return;
     if (cur.parentElement.classList.contains('closed')) cur.click(); else focusEl(navItems()[navItems().indexOf(cur) + 1]);
   }
   else if (e.key === 'g') go(items[0]);
   else if (e.key === 'G') go(items[items.length - 1]);
-  else if (e.key === '?') toast('j/k move · h/l fold or unfold, up or into a level · Enter edit (a section header: the whole section) · e same, in ' + editorName + ' · Shift+Enter run · b new cell below · x select · g/G top/bottom');
-  else if (e.key === 'b' && cur) insertBelow(cur);
+  else if (e.key === '?') toast('j/k move · ←/→ fold or unfold, up or into a level · Enter edit (on a header: the whole section) · e same, in ' + editorName + ' · Esc save · Shift+Enter run · l value/layout · a asm · o/O new cell below/above · dd delete · u undo delete · c assistant edits it · x select · g/G top/bottom');
   else if (e.key === 'x' && focusUid) toggleSel(focusUid);
   else if (e.key === 'Escape') { [...selected].forEach(toggleSel); }
 });
@@ -785,7 +794,14 @@ function placeDiag(text, uids, ok) {
 }
 
 // ---------------------------------------------------------------- disassembly
+// l: show or hide the cell's value (its layout, for a struct), or before it has run, the layout of its type
+function toggleValue(c) {
+  const r = c.out.querySelector(':scope > .res:not(.preview)') || c.out.querySelector(':scope > .res.preview');
+  if (r) r.click(); else toast(batches[c.uid] ? 'this cell has no value' : 'no value yet: run it (Shift+Enter)');
+}
 async function showAsm(c) {
+  const shown = c.out.querySelector(':scope > .asm, :scope > .noasm');
+  if (shown) { shown.remove(); return; }   // a toggle
   const id = batches[c.uid];
   if (!id) { toast('run the cell first'); return; }
   const evs = await op('asm', {id});
@@ -797,7 +813,7 @@ function showAsmData(a, uids, force) {
     const fi = a.files.indexOf(c.file);
     const inCell = i => i[0] === fi && i[1] >= c.line && i[1] < c.line + c.nlines;
     const fns = a.fns.filter(f => f.ins.some(inCell));
-    if (!fns.length) { if (force) c.out.append(el('div', 'vdim', 'no machine code for this cell (declarations only, or inlined elsewhere)')); continue; }
+    if (!fns.length) { if (force) c.out.append(el('div', 'vdim noasm', 'no machine code for this cell (declarations only, or inlined elsewhere)')); continue; }
     c.out.querySelector('.asm')?.remove();
     const box = el('div', 'asm');
     for (const f of fns) {
@@ -837,12 +853,34 @@ async function editRange(navEl, term) {
   if (grp) { grp.classList.remove('closed'); grp.querySelector(':scope > .gb').style.display = 'none'; }   // the editor stands in for the group's body
   return editTarget({key: r.file + ':' + r.b, file: r.file, b: r.b, e: r.e, node: navEl, keep: !!grp, text}, term);
 }
-async function insertBelow(navEl) {   // an empty editor after a cell, comment or group; nothing is written unless you type
-  const uid = navEl.classList.contains('cell') ? navEl.dataset.uid : null, r = uid ? cells[uid] : navEl.rng;
-  if (!r || r.ro) { toast(r ? 'read-only (listed in .zeno.json)' : 'nothing to insert after'); return; }
-  const ph = el('div'), after = navEl.classList.contains('gh') ? navEl.parentElement : navEl;
-  after.after(ph);
-  return editTarget({key: 'ins:' + r.file + ':' + r.e, file: r.file, b: r.e, e: r.e, node: ph, text: ''});
+const rangeOf = navEl => navEl.classList.contains('cell') ? cells[navEl.dataset.uid] : navEl.rng;
+// o / O: an empty editor below or above a cell, comment or group; nothing is written unless you type
+async function insertAt(navEl, above) {
+  const r = rangeOf(navEl);
+  if (!r || r.ro) { toast(r ? 'read-only (listed in .zeno.json)' : 'nothing to insert next to'); return; }
+  const ph = el('div'), at = navEl.classList.contains('gh') ? navEl.parentElement : navEl, pos = above ? r.b : r.e;
+  above ? at.before(ph) : at.after(ph);
+  return editTarget({key: 'ins:' + r.file + ':' + pos, file: r.file, b: pos, e: pos, before: above, node: ph, text: ''});
+}
+// dd deletes a cell or comment (not a whole group); u puts the last deletion back
+async function deleteSel(navEl) {
+  if (navEl.classList.contains('gh')) { toast('dd deletes a cell or comment; to remove a section, edit it (Enter)'); return; }
+  const r = rangeOf(navEl); if (!r || r.ro) { toast('read-only (listed in .zeno.json)'); return; }
+  const items = navItems(), next = items[items.indexOf(navEl) + 1] || items[items.indexOf(navEl) - 1];
+  const {text} = await api('/api/region', {file: r.file, b: r.b, e: r.e});
+  const res = await api('/api/region', {file: r.file, b: r.b, e: r.e, orig: text, text: ''});
+  if (!res.ok) { toast(res.error || 'could not delete'); return; }
+  lastDeleted = {file: r.file, b: r.b, text: res.removed};
+  focusEl(next); ownWrite = Date.now(); await load();
+  toast('deleted — u to undo');
+}
+async function undoDelete() {
+  if (!lastDeleted) return;
+  const d = lastDeleted; lastDeleted = null;
+  const res = await api('/api/region', {file: d.file, b: d.b, e: d.b, orig: '', text: d.text, raw: true});
+  if (!res.ok) { toast('could not restore: ' + (res.error || 'the file changed')); return; }
+  ownWrite = Date.now(); await load();
+  const u = order.find(u => cells[u].file === d.file && cells[u].b === d.b); if (u) focus(u);
 }
 const openEdits = new Set();
 async function editTarget(t, term) {
@@ -862,27 +900,30 @@ async function afterEdit(t, text, run) {
 }
 async function save(t, text) {
   if (text === t.text) return true;
-  const r = t.uid ? await api('/api/cell', {action: 'replace', uid: t.uid, text}) : await api('/api/region', {file: t.file, b: t.b, e: t.e, orig: t.text, text});
+  const r = t.uid ? await api('/api/cell', {action: 'replace', uid: t.uid, text}) : await api('/api/region', {file: t.file, b: t.b, e: t.e, orig: t.text, text, before: !!t.before});
   if (!r.ok) toast(r.error || 'could not save');
   return r.ok;
 }
-// A textarea in place of the target. Ctrl+S or Ctrl+Enter saves, Shift+Enter saves and syncs, Esc cancels, Ctrl+Space asks the model.
+// A textarea in place of the target. Esc (or clicking away) saves, Shift+Enter saves and syncs, Ctrl+Space asks the model.
 function editPlain(t) {
   return new Promise(done => {
-    const box = el('div'), ta = el('textarea', 'ed'), hint = el('div', 'edhint', 'Ctrl+S save · Shift+Enter save & sync · Esc cancel · Ctrl+Space complete');
+    const box = el('div'), ta = el('textarea', 'ed'), hint = el('div', 'edhint', 'Esc save · Shift+Enter save & sync · Ctrl+Space complete');
     ta.value = t.text; ta.spellcheck = false; box.append(ta, hint); mount(t, box);
     const fit = () => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 2 + 'px'; };
     const put = s => { ta.setRangeText(s, ta.selectionStart, ta.selectionEnd, 'end'); fit(); };
+    let finished = false;
     const finish = async (keep, run) => {
+      if (finished) return; finished = true;
       const text = ta.value.replace(/\s+$/, '');
-      if (keep && !(await save(t, text))) return;
+      if (keep && !(await save(t, text))) { finished = false; return; }
       await afterEdit(t, keep ? text : '', keep && run); done();
     };
     ta.oninput = fit;
+    ta.onblur = () => setTimeout(() => { if (!document.hasFocus() || document.activeElement === ta) return; finish(true); }, 0);   // clicking elsewhere saves too
     ta.onkeydown = async e => {
       const ctl = e.ctrlKey || e.metaKey;
-      if (e.key === 'Escape') { e.preventDefault(); finish(false); }
-      else if ((ctl && (e.key === 's' || e.key === 'Enter')) || (e.key === 'Enter' && e.shiftKey)) { e.preventDefault(); finish(true, e.shiftKey); }
+      if (e.key === 'Escape') { e.preventDefault(); finish(true); }
+      else if (e.key === 'Enter' && (e.shiftKey || ctl)) { e.preventDefault(); finish(true, e.shiftKey); }
       else if (e.key === 'Tab') { e.preventDefault(); put('  '); }
       else if (e.key === 'Enter') { e.preventDefault(); const line = ta.value.slice(ta.value.lastIndexOf('\n', ta.selectionStart - 1) + 1, ta.selectionStart); put('\n' + /^\s*/.exec(line)[0]); }
       else if (ctl && e.key === ' ') {
@@ -897,7 +938,8 @@ function editPlain(t) {
 async function editTerm(t) {
   const box = el('div', 'term'); mount(t, box);
   const nlines = t.text.split('\n').length;
-  const rows0 = editorVim ? Math.max(5, nlines + 3) : Math.min(40, Math.max(12, nlines + 4));   // only vim reports its line count
+  const maxRows = () => Math.max(5, Math.floor((innerHeight - 90) / 17));   // fit the window (rows are ~17px at 13px font)
+  const rows0 = Math.min(maxRows(), editorVim ? Math.max(5, nlines + 3) : Math.max(12, nlines + 4));   // only vim reports its line count
   const term = new Terminal({rows: rows0, fontSize: 13, fontFamily: 'ui-monospace,SFMono-Regular,Menlo,Consolas,monospace', cursorBlink: true, theme: {background: '#111111'}});
   const fit = new FitAddon.FitAddon(); term.loadAddon(fit); term.open(box);
   const cols = () => (fit.proposeDimensions() || {cols: 100}).cols;
@@ -908,12 +950,12 @@ async function editTerm(t) {
   // rows so a new line doesn't scroll the top one away before the terminal has grown
   term.parser.registerOscHandler(777, data => {
     const m = /lines=(\d+)/.exec(data);
-    if (m) { const rows = Math.max(5, Math.min(60, +m[1] + 3)); if (rows !== term.rows) { term.resize(cols(), rows); api('/api/term/size', {id, rows, cols: cols()}); } }
+    if (m) { const rows = Math.max(5, Math.min(maxRows(), +m[1] + 3)); if (rows !== term.rows) { term.resize(cols(), rows); api('/api/term/size', {id, rows, cols: cols()}); } }
     return true;
   });
   let q = Promise.resolve();
   term.onData(d => { q = q.then(() => fetch('/api/term/in?id=' + id, {method: 'POST', headers: {'X-Token': TOKEN}, body: d})); });
-  term.focus();
+  term.focus(); box.scrollIntoView({block: 'nearest'});
   const r = await fetch('/api/term/out?id=' + id + '&token=' + TOKEN);
   const rd = r.body.getReader();
   for (;;) { const {done, value} = await rd.read(); if (done) break; term.write(value); }
@@ -974,7 +1016,17 @@ function chatBody(text) {   // markdown, with ```cpp replace=uid / after=uid blo
     const info = m[1].trim(), code = m[2].replace(/\n$/, ''), pre = el('pre', 'code'); pre.innerHTML = hl(code, []);
     d.append(pre);
     const t = /(replace|after)=\[?([^\s\]]+)\]?/.exec(info);
-    if (t && m[3]) {
+    if (t && m[3] && t[2] === 'selection') {   // the whole selected range, rewritten
+      const b = el('button', 'apply', 'Apply to ' + (chatFocus?.label || 'the selection'));
+      b.onclick = async () => {
+        const f = chatFocus; if (!f) { toast('nothing is selected for the assistant (press c on something)'); return; }
+        const r = await api('/api/region', {file: f.file, b: f.b, e: f.e, orig: f.text, text: code});
+        if (!r.ok) { toast(r.error || 'could not apply'); return; }
+        f.text = code; f.e = f.b + bytes(code); b.textContent = 'applied ✓'; b.disabled = true;
+        ownWrite = Date.now(); await load();
+      };
+      d.append(b);
+    } else if (t && m[3]) {
       const b = el('button', 'apply', t[1] === 'replace' ? 'Apply to cell ' + t[2] : 'Insert after cell ' + t[2]);
       b.onclick = async () => {
         const r = await api('/api/cell', {action: t[1] === 'replace' ? 'replace' : 'insert_after', uid: t[2], text: code});
@@ -1007,7 +1059,7 @@ async function chatPanel(s) {
   const show = m => { const d = el('div', 'msg ' + m.role); d.append(m.role === 'user' ? el('div', '', m.content) : chatBody(m.content)); msgs.append(d); return d; };
   chatMsgs.forEach(show);
   const ta = el('textarea'); ta.placeholder = 'Ask about the notebook, or ask for a change… (Enter to send, Shift+Enter for a newline)';
-  const row = el('div', 'row'), ctxl = el('span', '', chatFocus ? 'about cell [' + (cells[chatFocus]?.no || chatFocus) + ']' : 'about the whole notebook');
+  const row = el('div', 'row'), ctxl = el('span', '', chatFocus ? 'editing ' + chatFocus.label : 'about the whole notebook');
   row.append(ctxl);
   inp.append(ta, row);
   msgs.scrollTop = msgs.scrollHeight;
@@ -1019,7 +1071,8 @@ async function chatPanel(s) {
     ta.value = '';
     chatMsgs.push({role: 'user', content: q}); show(chatMsgs[chatMsgs.length - 1]);
     const a = {role: 'assistant', content: ''}, d = show(a);
-    await stream('/api/chat', {messages: chatMsgs, focus: chatFocus || focusUid || ''}, ev => {
+    const f = chatFocus;
+    await stream('/api/chat', {messages: chatMsgs, focus: f ? f.uid || '' : focusUid || '', ...(f && !f.uid ? {range: {file: f.file, b: f.b, e: f.e}} : {})}, ev => {
       if (ev.ev === 'thinking' && !a.content) { d.textContent = 'thinking…'; d.classList.add('vdim'); return; }
       if (ev.ev !== 'delta') return;
       d.classList.remove('vdim');
@@ -1028,12 +1081,32 @@ async function chatPanel(s) {
     chatMsgs.push(a); sessionStorage.setItem('zeno.chat', JSON.stringify(chatMsgs.slice(-40)));
   };
 }
-function askAbout(uid) { chatFocus = uid; sideMode = 'chat'; $('#side').classList.add('open'); refreshSide(); }
+// c: the assistant edits the selection (a cell, a comment, or a whole section/function/file). While the chat
+// is about it, the selection is shown as its source text, outlined.
+async function chatOn(navEl) {
+  const uid = navEl.classList.contains('cell') ? navEl.dataset.uid : null, r = uid ? cells[uid] : navEl.rng; if (!r) return;
+  const {text} = await api('/api/region', {file: r.file, b: r.b, e: r.e});
+  const label = uid ? 'cell [' + cells[uid].no + ']' : navEl.classList.contains('gh') ? '“' + navEl.querySelector('.ti').textContent + '”' : 'this comment';
+  chatFocus = {uid, file: r.file, b: r.b, e: r.e, text, label, nav: navEl.dataset.nav, ro: r.ro};
+  sideMode = 'chat'; $('#side').classList.add('open'); refreshSide(); showChatSrc();
+}
+function showChatSrc() {
+  document.querySelectorAll('.chatsrc').forEach(x => x.remove());
+  document.querySelectorAll('.chatsel').forEach(x => { x.classList.remove('chatsel'); x.style.display = ''; });
+  const f = chatFocus; if (!f || sideMode !== 'chat' || !$('#side').classList.contains('open')) return;
+  if (f.uid) { cells[f.uid]?.el.classList.add('chatsel'); return; }   // a cell is plain code already
+  const n = $('#doc').querySelector('[data-nav="' + CSS.escape(f.nav) + '"]'); if (!n) return;
+  const pre = el('pre', 'code chatsrc'); pre.innerHTML = hl(f.text, []);
+  const hide = n.classList.contains('gh') ? n.parentElement.querySelector(':scope > .gb') : n;
+  n.parentElement.classList.remove('closed');
+  hide.classList.add('chatsel'); hide.style.display = 'none'; n.classList.contains('gh') ? n.after(pre) : n.after(pre);
+}
+const bytes = s => new TextEncoder().encode(s).length;   // ranges are byte offsets
 
 function side(mode) {
   const s = $('#side');
-  if (sideMode === mode && s.classList.contains('open')) { s.classList.remove('open'); sideMode = null; return; }
-  sideMode = mode; s.classList.add('open'); refreshSide();
+  if (sideMode === mode && s.classList.contains('open')) { s.classList.remove('open'); sideMode = null; showChatSrc(); return; }
+  sideMode = mode; s.classList.add('open'); refreshSide(); showChatSrc();
 }
 $('#tvars').onclick = () => side('vars');
 $('#tchat').onclick = () => { chatFocus = null; side('chat'); };
