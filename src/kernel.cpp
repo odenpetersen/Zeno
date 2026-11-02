@@ -10,6 +10,8 @@
 #include "common.hpp"
 #include "runtime.hpp"
 #include <csignal>
+#include <poll.h>
+#include <sys/syscall.h>
 #include <filesystem>
 #include <cstring>
 #include <dlfcn.h>
@@ -160,6 +162,19 @@ size_t run_on_fresh_stack(std::function<void()> f) {
 
 long rss_kb() { long a = 0, b = 0; FILE* f = fopen("/proc/self/statm", "r"); if (f) { if (fscanf(f, "%ld %ld", &a, &b) != 2) b = 0; fclose(f); } return b * 4; }
 
+// Wait for a child, but if the frontend dies meanwhile (its end of the request pipe closes), take the whole
+// kernel down with it: otherwise a long-running cell would keep going as an orphan.
+void wait_child(pid_t pid, int& status) {
+  int pfd = (int)syscall(SYS_pidfd_open, pid, 0);   // readable when the child exits; else poll every 200 ms
+  for (;;) {
+    pid_t r = waitpid(pid, &status, WNOHANG);
+    if (r == pid || (r < 0 && errno != EINTR)) break;
+    pollfd p[2] = {{3, 0, 0}, {pfd, POLLIN, 0}};
+    if (poll(p, pfd >= 0 ? 2 : 1, pfd >= 0 ? -1 : 200) > 0 && (p[0].revents & (POLLHUP | POLLERR | POLLNVAL))) kill(0, SIGKILL);
+  }
+  if (pfd >= 0) close(pfd);
+}
+
 // Run `f` in a throwaway fork so wild pointers can't take down the state.
 void in_fork(const std::function<void()>& f) {
   fflush(stdout);
@@ -168,7 +183,7 @@ void in_fork(const std::function<void()>& f) {
     for (int s : {SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT}) signal(s, SIG_DFL);
     f(); fflush(stdout); _exit(0);
   }
-  int status; waitpid(pid, &status, 0);
+  int status; wait_child(pid, status);
   if (!WIFEXITED(status) || WEXITSTATUS(status)) emit("{\"ev\":\"error\",\"type\":\"inspection\",\"what\":\"inspection crashed (memory not readable as that type)\"}");
 }
 
@@ -307,7 +322,7 @@ void op_exec(const J& r) {
   }
   close(okp[1]);
   int status = 0;
-  while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+  wait_child(pid, status);
   char b; bool committed = read(okp[0], &b, 1) == 1;
   close(okp[0]);
   if (WIFEXITED(status) && WEXITSTATUS(status) == 42) return done(",\"ok\":true,\"undo\":true");
