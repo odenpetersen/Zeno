@@ -10,7 +10,7 @@ const char* const kStarter = R"cpp(// # Welcome to Zeno
 //
 // This file is a notebook. Every top-level statement is a cell, and comments
 // like this one are markdown. Press **⟳ Sync** to run, click **reveal** under a
-// cell to see its value, and double-click a cell to edit it in vim.
+// cell to see its value, and click a cell to edit it.
 
 #include <vector>
 

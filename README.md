@@ -45,12 +45,19 @@ To try the bundled examples without installing: `make && ./zeno web examples/dem
   - `//%asm`
 - **Read-only parts:** list globs in `.zeno.json` at the project root, e.g. `{"readonly": ["vendor/**", "third_party/**"]}`. Edits from the page and from agents are refused there.
 
-## Running: always consistent, never "Run all"
+## Running
 
-- **Sync** (⟳, and ▶ on a cell for "up to here") re-runs exactly what's out of date. That means cells that changed or are new, plus every later cell that reads a name they write, transitively. The state therefore always equals running the files top to bottom.
-- **Rollbacks:** when re-running in place would be wrong (a mutation was edited, a cell was deleted, or a later cell changed something an earlier one reads), Sync first rolls back to an earlier snapshot.
-- **Dependencies** are name-level: definitions and identifiers from the cell tokenizer. Statements and initializers are assumed to modify whatever they mention, so Sync may re-run too much but never too little.
-- **Every run is a transaction.** Each run executes in a `fork()` of the previous state. A crash, exception or Ctrl-C/Interrupt discards the child, and the state is exactly as before. Undo steps back one run.
+Each cell's toolbar has a **run ▾** menu (also on right-click of ▶), with keys:
+
+- **Bring up to date** (Shift+Enter, ▶): the least re-running that leaves the state as if this cell and everything it depends on had run in file order. It runs nothing if that's already so.
+  - It re-runs cells that changed or are new, and cells that read what those write.
+  - If a variable's history is wrong (a mutation was edited or deleted, or a later cell modified it), it is rebuilt from its declaration. Declaring it again starts it fresh, so nothing is rolled back.
+- **Run just this** (`r`): the cell alone, whatever its state.
+- **Re-run it and all it depends on** (`R`).
+- **Run everything above it too** (`A`): every earlier cell in file order, then this one.
+- **Run all** (header) restarts the kernel and runs every cell. **⟳ Sync** brings the whole notebook up to date.
+- **Dependencies** are by name: a cell depends on earlier cells that write a name it reads, including what the functions it calls read. A statement is taken to modify a name when it assigns or increments it, passes it to a function, takes its address or calls a method on it (other than `size()` and similar read-only ones). Reading, printing with `<<` or reading a member is not modifying. When in doubt it assumes modified, so it re-runs too much rather than too little.
+- **Every run is a transaction.** Each run executes in a `fork()` of the previous state. A crash, exception or Ctrl-C/Interrupt discards the child, and the state is exactly as before. ⟲ Undo steps back one run; nothing else rolls back.
 - **Redeclaration works:** every cell gets a nested namespace, so the newest declaration of a name wins.
 
 ## Seeing values
@@ -89,11 +96,13 @@ To try the bundled examples without installing: `make && ./zeno web examples/dem
 ## Editing, git, hot reload
 
 - **Keys:** one thing is selected at a time: a cell, a comment or a group header.
-  - `j`/`k` (or ↓/↑) move; ←/→ (or `h`) fold and unfold groups and move up or into a level; `g`/`G` jump to the top or bottom.
-  - Enter edits the selection in place, `e` in your editor; Shift+Enter runs a cell (on a group, everything in it).
-  - `l` shows or hides a cell's value (its memory layout, for a struct), `a` its assembly.
+  - `j`/`k` (or ↓/↑) move; `h`/`l` (or ←/→) fold and unfold groups and move up or into a level; `g`/`G` jump to the top or bottom.
+  - Enter edits the selection in place, `e` in your editor.
+  - Shift+Enter brings a cell up to date (on a group, its last cell); `r`, `R` and `A` run it in the other ways above.
+  - `v` shows or hides a cell's value (its memory layout, for a struct), `m` its assembly.
   - `o`/`O` open an empty editor below/above, `dd` deletes a cell or comment, `u` undoes the last delete.
-  - `c` hands the selection to the assistant; `x` multi-selects; `?` lists the keys.
+  - `c` hands the selection to the assistant; `x` marks cells to move into a new file together (*Move selected to file…*); `?` lists the keys.
+  - Toolbar buttons underline their key.
 - **Editing:** Enter (or a click on code, or a double-click on a comment) edits the selection in place. On a cell that's the cell; on a comment, its `//` source; on a section, function or file header, all of it in one buffer. Esc or clicking away saves, Shift+Enter saves and syncs, Ctrl+Space asks the model for a completion. Saving writes exactly that range of the file, and refuses if the file changed underneath. In the terminal REPL, `.edit N` opens `$EDITOR`.
 - **Your editor:** `e` does the same in your editor, running in a terminal embedded in the page: `ZENO_EDITOR`, else `$EDITOR`, else vim. Vim also gets model completion on Ctrl-Space and a terminal that grows with the buffer (vim reports its line count through an escape sequence).
 - **Hot reload:** files changed on disk by an editor, a coding agent or git reload in place. Outputs stay with the right cells: cell lists are aligned diff-style, so inserting a cell doesn't misattribute outputs. Edited cells keep their old output, marked stale.
@@ -120,7 +129,7 @@ To configure it, either:
 | `outline` | files, includes, headings, and every cell with its uid and first line |
 | `list_files`, `read_file`, `write_file` | the project folder (read-only paths are enforced) |
 | `read_cell`, `edit_cell`, `insert_cell`, `delete_cell` | cells by uid, written back into their files |
-| `run` | Sync up to a cell, or everything; `group` / `force` run cells unconditionally |
+| `run` | Run cells: `mode` sync (default), this, deps, above or all; `group` runs a file or section unconditionally |
 | `results` | a cell's last output |
 | `reveal` | inspect a value from a result's ref |
 | `variables`, `heap`, `leaks`, `disassemble`, `layout`, `undo` | the panels above, as text |
@@ -153,5 +162,6 @@ The tip process `fork()`s and the child `dlopen()`s the library on a fresh mmap'
 - **Lifetimes:**
   - A cell's value that refers to a temporary dangles (as with `auto&&` in C++).
   - `return` inside `main` ends that cell, not the program.
-- **Rollback granularity is one run:** one Sync or ▶ is one snapshot. A rollback re-runs everything after that snapshot.
+- **Rebuilding a variable re-runs its declaration**, so an expensive load re-runs when a later cell's mutation of it has to be undone.
+- **Effects outside the process** (files written, network) aren't tracked or undone.
 - **The terminal REPL** has `.run`, `.edit`, `.tree`, `.x`, `.asm`, `.heap`, `.leaks`, `.layout`, `.undo`. Sync, the assistant and git markers are in the web UI.

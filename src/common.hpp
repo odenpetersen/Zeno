@@ -41,7 +41,8 @@ struct Gen {
 };
 struct Src { std::string uid, code, file; int line = 1; };   // one cell to execute
 Gen gen_batch(const std::vector<Src>& cells, int id);
-struct Deps { std::set<std::string> defs, uses; bool decl_only = true; };   // decl_only: types/functions only, no runtime effects
+// decl_only: types/functions only, no runtime effects. mods: the uses that may be modified (a guess from the tokens).
+struct Deps { std::set<std::string> defs, uses, mods; bool decl_only = true; };
 Deps deps_of(const std::string& code);
 
 // ---------------------------------------------------------------- projects: folders of plain C++ files

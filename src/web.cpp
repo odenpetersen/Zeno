@@ -192,72 +192,134 @@ void run_cells(int fd, const std::vector<Src>& cells, const std::string& origin)
   if (g_k.pid < 0) { g_hist.clear(); g_hist_unknown = false; }
 }
 
-// ---------------------------------------------------------------- sync: keep the state equal to a top-to-bottom run
+// ---------------------------------------------------------------- run plans
 
-struct Plan { int undo = 0; bool restart = false; std::vector<Src> run; std::vector<std::string> dirty; };
+struct Plan { bool restart = false; std::vector<Src> run; std::vector<std::string> dirty; };
 
-// Which cells must (re)run so that the state equals running every cell up to `upto` (or all) in file order,
-// and how many runs must be rolled back first. Uses name-level dependencies, see deps_of().
-Plan make_plan(const std::string& upto) {
+// What to run for a target cell (or the whole notebook when `upto` is empty). Modes:
+//   this   the target alone
+//   sync   the least re-running that leaves the state as if every cell the target depends on (transitively,
+//          by name) had run in file order: changed and new cells, cells reading what those write, and when a
+//          name's history is wrong (an edited or deleted mutation, a later cell that touched it), everything
+//          from that name's declaration on, since declaring it again starts it fresh
+//   deps   every cell the target depends on, and the target
+//   above  every cell above the target in file order, and the target
+//   all    a fresh kernel, then every cell
+// Dependencies are by name (deps_of): a cell reads the names it mentions (plus what the functions it calls
+// read), declares the names it defines, and a statement is assumed to modify every notebook name it mentions.
+Plan make_plan(const std::string& upto, const std::string& mode = "sync") {
   Plan p;
   auto all = cells_under(g_root, "");
-  std::vector<Src> N;
-  for (auto& c : all) { N.push_back(c); if (!upto.empty() && c.uid == upto) break; }
+  long t = (long)all.size() - 1;
+  if (!upto.empty()) { t = -1; for (size_t i = 0; i < all.size(); ++i) if (all[i].uid == upto) t = (long)i; if (t < 0) return p; }
+  auto take = [&](const std::vector<Src>& v) { p.run = v; for (auto& c : v) p.dirty.push_back(c.uid); return p; };
+  if (mode == "this") return take({all[t]});
+  if (mode == "all") { p.restart = true; return take(all); }
+  if (mode == "above") return take(std::vector<Src>(all.begin(), all.begin() + t + 1));
+
   static std::map<std::string, Deps> cache;
   auto deps = [&](const std::string& key) -> Deps& { auto it = cache.find(key); if (it == cache.end()) it = cache.emplace(key, deps_of(key.substr(key.find('\x1f') + 1))).first; return it->second; };
-  std::set<std::string> live; for (auto& c : all) live.insert(ckey(c));
-  // reads of a cell include what the functions it calls read (transitively)
-  std::map<std::string, std::set<std::string>> fn_uses;
-  for (auto& c : all) { auto& d = deps(ckey(c)); if (d.decl_only) for (auto& n : d.defs) fn_uses[n].insert(d.uses.begin(), d.uses.end()); }
-  auto reads = [&](const std::string& key) {
-    std::set<std::string> r = deps(key).uses, seen;
+  std::set<std::string> nb;   // names the notebook declares; anything else (std::cout, sin) isn't tracked
+  for (auto& c : all) for (auto& n : deps(ckey(c)).defs) nb.insert(n);
+  std::map<std::string, std::set<std::string>> fn_uses, fn_mods;   // a call reads what the function reads, modifies what it modifies
+  for (auto& c : all) { auto& d = deps(ckey(c)); if (d.decl_only) for (auto& n : d.defs) { fn_uses[n].insert(d.uses.begin(), d.uses.end()); fn_mods[n].insert(d.mods.begin(), d.mods.end()); } }
+  std::map<std::string, std::set<std::string>> rc, wc;
+  auto reads = [&](const std::string& key) -> const std::set<std::string>& {
+    auto it = rc.find(key); if (it != rc.end()) return it->second;
+    std::set<std::string> r = deps(key).uses, seen, out;
     std::vector<std::string> work(r.begin(), r.end());
     while (!work.empty()) { std::string n = work.back(); work.pop_back(); if (!seen.insert(n).second) continue; for (auto& u : fn_uses[n]) if (r.insert(u).second) work.push_back(u); }
-    return r;
+    for (auto& n : r) if (nb.count(n)) out.insert(n);
+    return rc[key] = out;
   };
-  auto writes = [&](const std::string& key) { auto& d = deps(key); std::set<std::string> w = d.defs; if (!d.decl_only) w.insert(d.uses.begin(), d.uses.end()); return w; };
-  auto meets = [](const std::set<std::string>& a, const std::set<std::string>& b) { for (auto& x : a) if (b.count(x)) return true; return false; };
-  if (g_hist_unknown || g_k.chain.size() < g_hist.size() + 1) { p.restart = true; p.run = N; for (auto& c : N) p.dirty.push_back(c.uid); return p; }
-  size_t keep = g_hist.size();
-  for (;;) {
-    std::map<std::string, size_t> ran;   // key -> batch index
-    for (size_t j = 0; j < keep; ++j) for (auto& k : g_hist[j].keys) ran[k] = j;
-    size_t rb = keep;
-    std::vector<bool> dirty(N.size());
-    std::set<std::string> dirty_writes, redefined;
-    for (size_t i = 0; i < N.size(); ++i) {
-      std::string k = ckey(N[i]);
-      dirty[i] = !ran.count(k) || meets(reads(k), dirty_writes);
-      if (dirty[i]) { auto w = writes(k); dirty_writes.insert(w.begin(), w.end()); redefined.insert(deps(k).defs.begin(), deps(k).defs.end()); }
+  auto writes = [&](const std::string& key) -> const std::set<std::string>& {
+    auto it = wc.find(key); if (it != wc.end()) return it->second;
+    auto& d = deps(key); std::set<std::string> w;
+    for (auto& n : d.defs) if (nb.count(n)) w.insert(n);
+    if (!d.decl_only) {
+      std::set<std::string> m = d.mods, seen;
+      std::vector<std::string> work(d.uses.begin(), d.uses.end());
+      while (!work.empty()) { std::string n = work.back(); work.pop_back(); if (!seen.insert(n).second) continue; for (auto& u : fn_mods[n]) if (m.insert(u).second) work.push_back(u); for (auto& u : fn_uses[n]) work.push_back(u); }
+      for (auto& n : m) if (nb.count(n)) w.insert(n);
     }
-    // A cell edited or deleted since it ran left its effects behind. That's harmless only if everything it
-    // wrote gets declared afresh by the re-run (the new declaration shadows the old); otherwise roll back.
-    for (size_t j = 0; j < keep; ++j) for (auto& k : g_hist[j].keys)
-      if (!live.count(k)) for (auto& w : writes(k)) if (!redefined.count(w)) { rb = std::min(rb, j); break; }
-    // Re-running a dirty cell now is only right if nothing after it (left alone) changed what it reads.
-    std::set<std::string> later_writes;
-    for (size_t i = N.size(); i-- > 0;) {
-      std::string k = ckey(N[i]);
-      if (dirty[i] && meets(reads(k), later_writes))
-        for (size_t j = i + 1; j < N.size(); ++j) if (!dirty[j] && meets(writes(ckey(N[j])), reads(k))) rb = std::min(rb, ran[ckey(N[j])]);
-      if (!dirty[i] && ran.count(k)) { auto w = writes(k); later_writes.insert(w.begin(), w.end()); }
+    return wc[key] = w;
+  };
+  auto declares = [&](const std::string& key, const std::string& n) { return deps(key).defs.count(n) > 0; };
+
+  // The cells that matter: the target and, transitively, every earlier cell writing a name one of them reads.
+  std::vector<bool> in(t + 1, upto.empty());
+  if (!upto.empty()) {
+    in[t] = true;
+    for (long i = t; i >= 0; --i) if (in[i]) {
+      auto r = reads(ckey(all[i]));
+      for (long j = 0; j < i; ++j) if (!in[j]) for (auto& n : writes(ckey(all[j]))) if (r.count(n)) { in[j] = true; break; }
     }
-    // Cells run out of file order are only harmless if they don't touch the same names.
-    long prev = -1; std::string prev_key;
-    std::map<std::string, size_t> pos; for (size_t i = 0; i < all.size(); ++i) pos[ckey(all[i])] = i;
-    for (size_t j = 0; j < keep; ++j) for (auto& k : g_hist[j].keys) {
-      if (!pos.count(k)) continue;
-      long at = (long)pos[k];
-      if (at < prev && meets(writes(k), reads(prev_key))) rb = std::min(rb, j);
-      if (at > prev) { prev = at; prev_key = k; }
-    }
-    if (rb >= keep) {
-      p.undo = (int)(g_hist.size() - keep);
-      for (size_t i = 0; i < N.size(); ++i) if (dirty[i]) { p.run.push_back(N[i]); p.dirty.push_back(N[i].uid); }
-      return p;
-    }
-    keep = rb;
   }
+  std::vector<long> S; for (long i = 0; i <= t; ++i) if (in[i]) S.push_back(i);
+  if (mode == "deps") { std::vector<Src> v; for (long i : S) v.push_back(all[i]); return take(v); }
+
+  // Lost track of the kernel's state (it crashed and restored, or snapshots went missing): start afresh.
+  if (g_hist_unknown || g_k.chain.size() < g_hist.size() + 1) { std::vector<Src> v; for (long i : S) v.push_back(all[i]); p.restart = true; return take(v); }
+
+  // H: every cell that has run, in order. log(n, upto): the cells that wrote n in H[0, upto), from its latest declaration.
+  std::vector<std::string> H; for (auto& b : g_hist) H.insert(H.end(), b.keys.begin(), b.keys.end());
+  auto log = [&](const std::string& n, size_t end) {
+    std::vector<std::string> l;
+    for (size_t i = 0; i < end; ++i) { const auto& k = H[i]; if (declares(k, n)) l.clear(); if (writes(k).count(n)) l.push_back(k); }
+    return l;
+  };
+  auto last_run = [&](const std::string& k) -> long { for (size_t i = H.size(); i-- > 0;) if (H[i] == k) return (long)i; return -1; };
+  // want(n, i): the cells of S before position i that write n, from its latest declaration: what a cell at i should see.
+  auto want = [&](const std::string& n, size_t i) {
+    std::vector<long> w;
+    for (size_t s = 0; s < i; ++s) { const auto& k = ckey(all[S[s]]); if (declares(k, n)) w.clear(); if (writes(k).count(n)) w.push_back(S[s]); }
+    return w;
+  };
+  auto keys = [&](const std::vector<long>& v) { std::vector<std::string> o; for (long i : v) o.push_back(ckey(all[i])); return o; };
+
+  std::vector<bool> rerun(S.size());
+  std::map<long, size_t> pos; for (size_t s = 0; s < S.size(); ++s) pos[S[s]] = s;
+  auto mark_all = [&](const std::vector<long>& v) { bool ch = false; for (long i : v) if (!rerun[pos[i]]) rerun[pos[i]] = ch = true; return ch; };
+  auto any_rerun = [&](const std::vector<long>& v) { for (long i : v) if (rerun[pos[i]]) return true; return false; };
+  for (bool changed = true; changed;) {
+    changed = false;
+    for (size_t s = 0; s < S.size() && !changed; ++s) {
+      std::string k = ckey(all[S[s]]);
+      long at = last_run(k);
+      bool must = at < 0;   // changed or new
+      for (auto& n : reads(k)) {
+        if (declares(k, n)) continue;
+        auto wn = want(n, s);
+        if (any_rerun(wn)) must = true;                                                    // an input gets recomputed
+        else if (at >= 0 && log(n, at) != keys(wn)) { changed |= mark_all(wn); must = true; }   // it saw the wrong history
+      }
+      for (auto& n : writes(k))   // its modification of n, still wanted, was lost when n was declared again
+        if (!must && !declares(k, n)) {
+          auto wn = want(n, S.size()); auto l = log(n, H.size());
+          if (std::find(wn.begin(), wn.end(), S[s]) != wn.end() && std::find(l.begin(), l.end(), k) == l.end()) must = true;
+        }
+      if (must && !rerun[s]) rerun[s] = changed = true;
+      if (!rerun[s]) continue;
+      // Re-running a statement that modifies n must start from n as it should be; if it isn't, rebuild n from its declaration.
+      for (auto& n : writes(k)) {
+        if (declares(k, n)) continue;
+        auto wn = want(n, s);
+        if (!any_rerun(wn) && log(n, H.size()) != keys(wn)) changed |= mark_all(wn);
+      }
+    }
+    if (changed) continue;
+    // Finally each name the cells write must end up as they'd leave it: a later writer is undone by declaring the name
+    // afresh, and a writer that runs again redoes the writers after it.
+    std::set<std::string> names; for (long i : S) for (auto& n : writes(ckey(all[i]))) names.insert(n);
+    for (auto& n : names) {
+      auto wn = want(n, S.size());
+      long last = -1; for (size_t s = 0; s < S.size(); ++s) if (rerun[s] && writes(ckey(all[S[s]])).count(n)) last = S[s];
+      if (last >= 0) { std::vector<long> after; for (long i : wn) if (i > last) after.push_back(i); changed |= mark_all(after); }
+      else if (!wn.empty() && log(n, H.size()) != keys(wn)) changed |= mark_all(wn);
+    }
+  }
+  for (size_t s = 0; s < S.size(); ++s) if (rerun[s]) { p.run.push_back(all[S[s]]); p.dirty.push_back(all[S[s]].uid); }
+  return p;
 }
 
 // ---------------------------------------------------------------- assistant
@@ -407,15 +469,15 @@ void handle(int fd) {
     else cells = cells_under(g_root, target);
     run_cells(fd, cells, b["origin"].str("api"));
   }
-  else if (p == "/api/sync") {   // {upto: uid | ""}: run exactly what is needed for a consistent state
+  else if (p == "/api/sync") {   // {upto: uid | "", mode: sync | this | deps | above | all}, see make_plan
     Plan pl;
+    std::string mode = b["mode"].str("sync");
     {
       std::lock_guard<std::mutex> l(g_kmu);
-      pl = make_plan(b["upto"].str());
+      pl = make_plan(b["upto"].str(), mode);
       if (pl.restart) { g_k.stop(); g_k.start(); g_hist.clear(); g_hist_unknown = false; }
-      for (int i = 0; i < pl.undo; ++i) { J r = g_k.call("undo", "", [](const std::string&, const std::string&) {}); if (r["ok"].b && !g_hist.empty()) g_hist.pop_back(); }
     }
-    if (pl.restart || pl.undo) publish("{\"ev\":\"rollback\",\"undo\":" + std::to_string(pl.undo) + ",\"restart\":" + (pl.restart ? "true" : "false") + ",\"origin\":" + jq(b["origin"].str("api")) + "}");
+    if (pl.restart) publish("{\"ev\":\"restart\",\"why\":" + jq(mode == "all" ? "" : "the kernel lost track of its state") + ",\"origin\":" + jq(b["origin"].str("api")) + "}");
     if (pl.run.empty()) { Stream st(fd, "application/x-ndjson"); st.chunk("{\"ev\":\"uptodate\"}\n"); }
     else run_cells(fd, pl.run, b["origin"].str("api"));
   }
@@ -463,7 +525,7 @@ void handle(int fd) {
   else if (p == "/api/plan") {   // what a sync would do, for showing which cells are out of date
     Plan pl; { std::lock_guard<std::mutex> l(g_kmu); pl = make_plan(""); }
     std::string d; for (auto& u : pl.dirty) d += (d.empty() ? "" : ",") + jq(u);
-    respond(fd, 200, "application/json", "{\"dirty\":[" + d + "],\"undo\":" + std::to_string(pl.undo) + ",\"restart\":" + (pl.restart ? "true" : "false") + "}");
+    respond(fd, 200, "application/json", "{\"dirty\":[" + d + "],\"restart\":" + (pl.restart ? "true" : "false") + "}");
   }
   else if (p == "/api/events") {   // every run's events, from any client, as they happen
     Stream st(fd, "application/x-ndjson");

@@ -390,6 +390,42 @@ std::vector<Item> scan_source(const std::string& s) {
 // ---------------------------------------------------------------- dependencies between cells
 // Names a cell defines and identifiers it mentions. Statements, expressions and variable initializers may
 // modify anything they mention, so callers treat those mentions as writes too (conservative, never too few).
+// Could the name at t[i] be modified here? Yes when it's assigned, incremented, has its address taken, is passed
+// to a function (maybe by reference), or has a method called on it that isn't a well-known read-only one.
+// Reading it in an expression, streaming it with <<, or reading a member is not.
+bool modified(const std::vector<std::string>& t, size_t i) {
+  static const std::set<std::string> ro = {"size", "empty", "length", "count", "find", "contains", "c_str", "str", "cbegin", "cend", "capacity", "max_size"};
+  std::string prev = i ? t[i - 1] : "";
+  if (prev == "++" || prev == "--" || prev == "&" || prev == ">>") return true;   // >>: cin >> x
+  if ((prev == "(" || prev == ",") && i >= 2) {   // an argument, unless it's a declaration's or a grouping's parenthesis
+    int depth = 0;
+    for (size_t j = i; j-- > 0;) {
+      if (t[j] == ")" || t[j] == "]" || t[j] == "}") ++depth;
+      else if (t[j] == "(" || t[j] == "[" || t[j] == "{") { if (depth-- == 0) { static const std::set<std::string> nocall = {"if", "while", "for", "switch", "return", "sizeof", "decltype", "alignof", "catch", "static_assert"};
+          if (t[j] == "(" && j > 0 && ((idstart(t[j - 1][0]) && !nocall.count(t[j - 1])) || t[j - 1] == ">" || t[j - 1] == ")")) return true; break; } }
+    }
+  }
+  size_t j = i + 1;
+  for (;;) {   // walk the postfix chain: .member, ->member, [index], (call)
+    if (j + 1 < t.size() && (t[j] == "." || t[j] == "->")) {
+      bool call = j + 2 < t.size() && t[j + 2] == "(";
+      if (call && !ro.count(t[j + 1])) return true;
+      j += 2; continue;
+    }
+    if (j < t.size() && (t[j] == "[" || t[j] == "(")) {
+      std::string open = t[j], close = open == "[" ? "]" : ")"; int depth = 0;
+      for (; j < t.size(); ++j) { if (t[j] == open) ++depth; else if (t[j] == close && --depth == 0) { ++j; break; } }
+      continue;
+    }
+    break;
+  }
+  if (j >= t.size()) return false;
+  const std::string& n = t[j];
+  if (n == "=" || n == "++" || n == "--" || n == "+=" || n == "-=" || n == "*=" || n == "/=") return true;
+  if (j + 1 < t.size() && t[j + 1] == "=" && (n == "%" || n == "&" || n == "|" || n == "^" || n == "<<" || n == ">>")) return true;
+  return n == "<<" && i == 0;   // out << x: the stream on the left changes
+}
+
 Deps deps_of(const std::string& code) {
   Deps d;
   static const std::set<std::string> kw = {"auto", "const", "constexpr", "static", "inline", "int", "double", "float", "char", "bool",
@@ -413,8 +449,14 @@ Deps deps_of(const std::string& code) {
       if (k.k == 'b') { size_t a = c.text.find('['), b = c.text.find(']', a); for (auto& n : tokens(c.text.substr(a + 1, b - a - 1))) if (idstart(n[0])) d.defs.insert(n); }
     } else if (k.k != 'p') d.decl_only = false;
     if (k.k == 'p' && t.size() >= 2 && t[0] == "define") d.defs.insert(t[1]);
-    for (auto& w : t) if (idstart(w[0]) && !kw.count(w)) d.uses.insert(w);
+    for (size_t i = 0; i < t.size(); ++i) {
+      const std::string& w = t[i];
+      if (!idstart(w[0]) || kw.count(w)) continue;
+      d.uses.insert(w);
+      if (i > 0 && (t[i - 1] == "." || t[i - 1] == "->" || t[i - 1] == "::")) continue;   // a member, not a name
+      if (modified(t, i)) d.mods.insert(w);
+    }
   }
-  for (auto& n : d.defs) d.uses.erase(n);
+  for (auto& n : d.defs) { d.uses.erase(n); d.mods.erase(n); }
   return d;
 }

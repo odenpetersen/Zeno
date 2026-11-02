@@ -76,6 +76,11 @@ pre.code{margin:0;padding:6px 10px;background:var(--code);border-radius:6px;font
 .tools{display:none;gap:4px;margin:3px 0 0;font-size:12px}
 .cell:hover .tools,.cell.focus .tools{display:flex}
 .tools button{font-size:11px;padding:1px 7px}
+.tools u,.menu u{text-decoration-thickness:1px;text-underline-offset:2px}
+.menu{position:absolute;z-index:30;background:var(--bg);border:1px solid var(--line);border-radius:6px;box-shadow:0 4px 14px #0003;padding:3px;display:flex;flex-direction:column;min-width:240px}
+.menu button{text-align:left;border:0;background:none;padding:4px 8px;font-size:12px}
+.menu button:hover{background:var(--accbg)}
+.menu button span{float:right;margin-left:16px;color:var(--ink3)}
 .tools .meta{margin-left:auto;color:var(--ink3);font-size:11px;align-self:center}
 .out{font-size:13px}
 .out>*{margin-top:4px}
@@ -148,8 +153,8 @@ canvas#heapmap{width:100%;height:90px;border-radius:6px;background:var(--code)}
 </style></head><body>
 <header>
  <h1 id="title">Zeno</h1>
- <button class="pri" id="sync" title="Re-run exactly the cells that are out of date (changed, new, or depending on a change), so the state always matches running the files top to bottom">⟳ Sync</button>
- <button id="runall" title="Restart the kernel and run everything">Restart &amp; run all</button>
+ <button class="pri" id="sync" title="Bring everything up to date: re-run only what changed or depends on a change, so the state is as if the whole notebook had run top to bottom">⟳ Sync</button>
+ <button id="runall" title="Restart the kernel and run every cell">Run all</button>
  <button id="intr" title="Interrupt (the run is rolled back)">■ Interrupt</button>
  <button id="undo" title="Roll back the last run">⟲ Undo</button>
  <button id="restart">Restart</button>
@@ -466,8 +471,9 @@ function cellEl(n) {
   const info = cells[n.uid] = {uid: n.uid, text: n.text, line: n.line, file: ctx.file, b: n.b, e: n.e, nlines: n.text.split('\n').length, el: c, pre, exps: [], no: order.length};
   c.dataset.uid = n.uid; c.tabIndex = -1;
   gut.append(el('span', 'no', '[' + order.length + ']'));
-  const rb = el('button', 'run', '▶'); rb.title = 'Bring this cell up to date: runs it and anything out of date before it (Shift+Enter). Alt+click: run just this cell regardless.';
-  rb.onclick = e => { e.stopPropagation(); e.altKey ? run(n.uid, 'cell') : sync(n.uid); };
+  const rb = el('button', 'run', '▶'); rb.title = 'Bring this cell up to date (Shift+Enter): re-runs only what it needs. Right-click for other ways to run it.';
+  rb.onclick = e => { e.stopPropagation(); sync(n.uid, n.uid); };
+  rb.oncontextmenu = e => { e.preventDefault(); e.stopPropagation(); runMenu(n.uid, rb); };
   gut.append(rb);
   gut.onclick = e => { if (e.shiftKey || e.metaKey || e.ctrlKey) toggleSel(n.uid); else focus(n.uid); };
   pre.innerHTML = hl(n.text, []);
@@ -479,10 +485,13 @@ function cellEl(n) {
   };
   c.addEventListener('click', () => { if (focusUid !== n.uid) focus(n.uid); });
   info.ro = ctx.ro;
-  const acts = [['ask', () => chatOn(c), 'Have the assistant edit this cell (c)'], ['asm', () => showAsm(info), 'Disassembly of this cell']];
-  if (!ctx.ro) acts.unshift(['edit', () => edit(n.uid), 'Edit here (Enter)'], [editorName, () => edit(n.uid, true), 'Edit in ' + editorName + ' (e)']), acts.push(['+ below', () => insertAt(c), 'New cell below (o; O for above)'], ['delete', () => del(n.uid), 'Delete cell']);
+  // Labels underline their key.
+  const acts = [['run ▾', e => runMenu(n.uid, e.currentTarget), 'Ways to run this cell'], ['<u>v</u>alue', () => toggleValue(info), 'Show or hide the value, or the layout of its type (v)'],
+                ['as<u>m</u>', () => showAsm(info), 'Show or hide the disassembly (m)'], ['<u>c</u>hat', () => chatOn(c), 'Have the assistant edit this cell (c)']];
+  if (!ctx.ro) acts.unshift(['edit', () => edit(n.uid), 'Edit here (Enter)'], ['op<u>e</u>n in ' + esc(editorName), () => edit(n.uid, true), 'Edit in ' + editorName + ' (e)']),
+    acts.push(['+ bel<u>o</u>w', () => insertAt(c), 'New cell below (o; O for above)'], ['<u>d</u>elete', () => deleteSel(c), 'Delete the cell (dd; u brings it back)']);
   for (const [label, f, tip] of acts) {
-    const b = el('button', '', label); b.title = tip; b.onclick = e => { e.stopPropagation(); f(); }; tools.append(b);
+    const b = el('button'); b.innerHTML = label; b.title = tip; b.onclick = e => { e.stopPropagation(); f(e); }; tools.append(b);
   }
   info.meta = el('span', 'meta'); tools.append(info.meta);
   const out = outs[n.uid] || el('div', 'out'); outs[n.uid] = out; info.out = out;
@@ -610,8 +619,11 @@ document.addEventListener('keydown', e => {
   }
   else if (e.key === 'j' || e.key === 'ArrowDown') go(items[i < 0 ? 0 : Math.min(i + 1, items.length - 1)]);
   else if (e.key === 'k' || e.key === 'ArrowUp') go(items[Math.max(i - 1, 0)]);
-  else if (e.key === 'l' && focusUid) toggleValue(cells[focusUid]);
-  else if (e.key === 'a' && focusUid) showAsm(cells[focusUid]);
+  else if (e.key === 'v' && focusUid) toggleValue(cells[focusUid]);
+  else if (e.key === 'm' && focusUid) showAsm(cells[focusUid]);
+  else if (e.key === 'r' && focusUid) sync(focusUid, focusUid, 'this');
+  else if (e.key === 'R' && focusUid) sync(focusUid, focusUid, 'deps');
+  else if (e.key === 'A' && focusUid) sync(focusUid, focusUid, 'above');
   else if ((e.key === 'o' || e.key === 'O') && cur) insertAt(cur, e.key === 'O');
   else if (e.key === 'd' && cur) { if (Date.now() - lastD < 600) { lastD = 0; deleteSel(cur); } else lastD = Date.now(); }
   else if (e.key === 'u') undoDelete();
@@ -620,14 +632,14 @@ document.addEventListener('keydown', e => {
     e.preventDefault();
     if (gh && !cur.parentElement.classList.contains('closed')) cur.click(); else focusEl(cur && parentHeader(cur));
   }
-  else if (e.key === 'ArrowRight') {   // unfold a group, else step into it
+  else if (e.key === 'l' || e.key === 'ArrowRight') {   // unfold a group, else step into it
     e.preventDefault();
     if (!gh) return;
     if (cur.parentElement.classList.contains('closed')) cur.click(); else focusEl(navItems()[navItems().indexOf(cur) + 1]);
   }
   else if (e.key === 'g') go(items[0]);
   else if (e.key === 'G') go(items[items.length - 1]);
-  else if (e.key === '?') toast('j/k move · ←/→ fold or unfold, up or into a level · Enter edit (on a header: the whole section) · e same, in ' + editorName + ' · Esc save · Shift+Enter run · l value/layout · a asm · o/O new cell below/above · dd delete · u undo delete · c assistant edits it · x select · g/G top/bottom');
+  else if (e.key === '?') toast('j/k move · h/l (←/→) fold or unfold, up or into a level · Enter edit (on a header: the whole section) · e same, in ' + editorName + ' · Esc save · Shift+Enter bring up to date · r run just this · R re-run it and all it depends on · A run everything above it too · v value/layout · m asm · o/O new cell below/above · dd delete · u undo delete · c assistant edits it · x mark for moving to a file · g/G top/bottom');
   else if (e.key === 'x' && focusUid) toggleSel(focusUid);
   else if (e.key === 'Escape') { [...selected].forEach(toggleSel); }
 });
@@ -652,13 +664,28 @@ async function run(target, kind) {
   if ($('#side').classList.contains('open') && sideMode !== 'chat') refreshSide();
 }
 // `show`: also reveal that cell's value (Shift+Enter), so running a cell visibly does something.
-async function sync(upto, show) {
+// mode: sync (default: the least re-running that leaves the state as if the cell and everything it depends on had
+// run in order), this, deps (re-run all it depends on), above (every cell above it), all (fresh kernel, every cell).
+async function sync(upto, show, mode) {
   const h = runHandler(show); let up = false;
-  await stream('/api/sync', {upto: upto || '', origin: ME}, e => { if (e.ev === 'uptodate') up = true; else h(e); });
+  if (mode === 'all') Object.values(outs).forEach(o => o.textContent = '');
+  await stream('/api/sync', {upto: upto || '', mode: mode || 'sync', origin: ME}, e => { if (e.ev === 'uptodate') up = true; else h(e); });
   if (up && show) { const r = cellOut(show)?.querySelector('.res:not(.preview)'); if (r && !r.nextElementSibling?.classList.contains('v')) r.click(); }
-  if (up) toast(upto ? 'up to date — nothing to re-run (Alt+click ▶ forces a run)' : 'everything is up to date');
+  if (up) toast(upto ? 'up to date — nothing to re-run (r runs it anyway)' : 'everything is up to date');
   markDirty();
   if ($('#side').classList.contains('open') && sideMode !== 'chat') refreshSide();
+}
+function runMenu(uid, at) {
+  document.querySelector('.menu')?.remove();
+  const m = el('div', 'menu'), r = at.getBoundingClientRect();
+  for (const [label, key, mode] of [['bring up to date', '⇧↵', 'sync'], ['<u>r</u>un just this', 'r', 'this'], ['<u>R</u>e-run it and all it depends on', 'R', 'deps'], ['run everything <u>A</u>bove it too', 'A', 'above']]) {
+    const b = el('button'); b.innerHTML = label + '<span>' + key + '</span>';
+    b.onclick = e => { e.stopPropagation(); m.remove(); sync(uid, uid, mode); };
+    m.append(b);
+  }
+  m.style.left = (r.left + scrollX) + 'px'; m.style.top = (r.bottom + scrollY + 2) + 'px';
+  document.body.append(m);
+  setTimeout(() => document.addEventListener('click', () => m.remove(), {once: true}));
 }
 // Before a cell has run, show the type and layout of the value it will produce (compiled, not executed).
 let previewing = false;
@@ -962,7 +989,6 @@ async function editTerm(t) {
   term.dispose();
   await afterEdit(t, '', false);
 }
-async function del(uid) { if (!confirm('Delete this cell from ' + uid.split(':')[0] + '?')) return; await api('/api/cell', {action: 'delete', uid}); load(); }
 
 // ---------------------------------------------------------------- side panel
 let sideMode = null;
@@ -1111,7 +1137,7 @@ function side(mode) {
 $('#tvars').onclick = () => side('vars');
 $('#tchat').onclick = () => { chatFocus = null; side('chat'); };
 $('#theap').onclick = () => side('heap');
-$('#runall').onclick = async () => { await api('/api/restart'); Object.values(outs).forEach(o => o.textContent = ''); run('', 'group'); };
+$('#runall').onclick = () => sync('', null, 'all');
 $('#sync').onclick = () => sync('');
 $('#intr').onclick = () => api('/api/interrupt');
 $('#undo').onclick = async () => { const evs = await op('undo'); const d = evs.find(e => e.ev === 'done'); toast(d && d.ok ? 'rolled back the last run' : (d?.why || 'nothing to undo')); markDirty(); if (sideMode) refreshSide(); };
@@ -1146,7 +1172,7 @@ async function filesChanged(v) {
         if (e.ev === 'hello') { since = e.seq; filesChanged(e.files); return; }
         if (e.seq) since = e.seq;
         if (e.ev === 'files') { filesChanged(e.v); return; }
-        if (e.ev === 'rollback') { toast(e.restart ? 'restarted the kernel to keep state consistent' : 'rolled back ' + e.undo + ' run(s) to keep state consistent'); return; }
+        if (e.ev === 'restart') { if (e.why) toast('restarted the kernel: ' + e.why); return; }
         if (e.ev === 'ping' || e.origin === ME) return;
         if (e.ev === 'batch') { h = runHandler(); toast('running ' + e.uids.length + ' cell(s) for ' + e.origin); }
         if (h) h(e);

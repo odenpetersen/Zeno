@@ -74,16 +74,17 @@ std::string clip(std::string s, size_t n = 30000) { return s.size() > n ? s.subs
 
 std::string run(const J& a) {
   std::string events;
-  if (a.has("group") || a["force"].b)   // explicit: run exactly these cells, whatever their state
-    events = http("/api/run", body({{"target", jq(a.has("uid") ? str_field(a, "uid") : str_field(a, "group"))}, {"kind", jq(a.has("uid") ? "cell" : "group")}, {"origin", jq("mcp")}}));
-  else events = http("/api/sync", body({{"upto", jq(str_field(a, "uid"))}, {"origin", jq("mcp")}}));
-  if (events.find("\"uptodate\"") != std::string::npos) return "already up to date: nothing needed re-running (use results to read outputs, or force:true to re-run anyway)";
+  std::string mode = a["force"].b ? "this" : a["mode"].str("sync");
+  if (a.has("group"))   // explicit: run exactly these cells, whatever their state
+    events = http("/api/run", body({{"target", jq(str_field(a, "group"))}, {"kind", jq("group")}, {"origin", jq("mcp")}}));
+  else events = http("/api/sync", body({{"upto", jq(str_field(a, "uid"))}, {"mode", jq(mode)}, {"origin", jq("mcp")}}));
+  if (events.find("\"uptodate\"") != std::string::npos) return "already up to date: nothing needed re-running (use results to read outputs, or mode \"this\" to re-run anyway)";
   std::vector<std::string> uids; std::string tail;
   std::istringstream in(events);
   for (std::string l; std::getline(in, l);) {
     J e = J::parse(l);
     if (e["ev"].str() == "batch") for (auto& u : e["uids"].a) uids.push_back(u.str());
-    if (e["ev"].str() == "done") tail = e["ok"].b ? "run succeeded" : "run FAILED and was rolled back: " + e["why"].str("compile error");
+    if (e["ev"].str() == "done") tail = e["ok"].b ? "run succeeded" : "run FAILED (its effects were discarded): " + e["why"].str("compile error");
   }
   if (uids.empty()) return "nothing to run (unknown uid or group?)";
   std::string o;
@@ -131,8 +132,8 @@ std::vector<Tool> tools() {
      [](const J& a) { return http("/api/cell", body({{"action", "\"insert_after\""}, {"uid", jq(a["after"].str())}, {"text", jq(a["text"].str())}})); }},
     {"delete_cell", "Delete a cell from its file.", kUid,
      [](const J& a) { return http("/api/cell", body({{"action", "\"delete\""}, {"uid", jq(a["uid"].str())}})); }},
-    {"run", "Bring the notebook up to date (Sync): runs exactly the cells that changed, are new, or depend on a change, rolling back first when needed, so state always equals a top-to-bottom run. With uid: up to that cell. With group (file path or file@N section) or force:true: run those cells unconditionally. Returns each cell's output, values (type + reveal ref), compiler errors, crashes. A failed run is rolled back.",
-     R"j({"type":"object","properties":{"uid":{"type":"string"},"group":{"type":"string"},"force":{"type":"boolean"}}})j", run},
+    {"run", "Run cells. mode sync (default): the least re-running that leaves the state as if the target cell (uid; else the whole notebook) and every cell it depends on by name had run top to bottom; nothing runs if that's already so. mode this: just the uid cell. deps: re-run the cell and everything it depends on. above: every cell above it, and it. all: restart the kernel and run every cell. With group (file path or file@N section): run those cells unconditionally. Returns each cell's output, values (type + reveal ref), compiler errors, crashes. A failed run leaves no partial state.",
+     R"j({"type":"object","properties":{"uid":{"type":"string"},"mode":{"type":"string","enum":["sync","this","deps","above","all"]},"group":{"type":"string"}}})j", run},
     {"results", "Output of a cell's last run.", kUid, [](const J& a) { return J::parse(http("/api/results", body({{"uid", jq(a["uid"].str())}})))["text"].str(); }},
     {"reveal", "Inspect a value: pass a reveal ref from run/results output (or from a pointer field). Returns type, size, layout with padding, fields/elements, and refs to dereference pointers.",
      R"j({"type":"object","properties":{"ref":{"type":"string"}},"required":["ref"]})j", [](const J& a) { return op("expand", "\"ref\":" + jq(a["ref"].str())); }},
