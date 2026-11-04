@@ -190,10 +190,18 @@ void wait_child(pid_t pid, int& status, int ack = -1) {
 }
 
 // Run `f` in a throwaway fork so wild pointers can't take down the state.
+// A forked child that's still working when this process dies (killed, or SIGPIPE) would be orphaned
+// and could spin forever, so it gets SIGKILLed along with us.
+void die_with_parent(pid_t parent) {
+  prctl(PR_SET_PDEATHSIG, SIGKILL);
+  if (getppid() != parent) _exit(1);   // parent died before the prctl
+}
+
 void in_fork(const std::function<void()>& f) {
   fflush(stdout);
-  pid_t pid = fork();
+  pid_t self = getpid(), pid = fork();
   if (pid == 0) {
+    die_with_parent(self);
     for (int s : {SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT}) signal(s, SIG_DFL);
     f(); fflush(stdout); _exit(0);
   }
@@ -290,8 +298,9 @@ void op_exec(const J& r) {
   if (pipe(ack)) ack[0] = ack[1] = -1;
   fflush(stdout);
   g_stop = 0; g_grace_expired = false;
-  pid_t pid = fork();
+  pid_t self = getpid(), pid = fork();
   if (pid == 0) {
+    die_with_parent(self);
     close(okp[0]); close(ack[0]);
     is_root = false;
     rt::stop_flag = 0; rt::stop_fd = ack[1];
@@ -339,6 +348,7 @@ void op_exec(const J& r) {
     if (!stopped.empty()) emit(stopped);
     if (rt::stop_fd >= 0) close(rt::stop_fd);
     rt::stop_fd = -1;
+    prctl(PR_SET_PDEATHSIG, 0);   // a committed tip holds the live state and outlives its snapshots
     struct sigaction tip{}; tip.sa_handler = [](int) { g_stop = 1; }; sigaction(SIGTERM, &tip, nullptr);
     (void)!write(okp[1], "1", 1); close(okp[1]);
     return done(",\"ok\":true");
