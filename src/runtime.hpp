@@ -19,6 +19,9 @@ void heap_cell_begin(int cell);
 std::string vars_json();
 struct Mark { bool begun = false, ended = false; heap::Stats h0, h1; zeno::counters c; double t0 = 0, t1 = 0; long ut0 = 0, ut1 = 0; };
 extern Mark mark;
+extern volatile int stop_flag;         // set by SIGTERM in a running batch
+extern int stop_fd;                    // written once when the batch acknowledges the stop
+std::string stop_report();             // {"ev":"stopped",...} for a batch that was asked to stop, else ""
 double now_ms();
 std::string heap_json();
 std::string leaks_json();

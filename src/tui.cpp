@@ -317,7 +317,8 @@ J handle(Kernel& k, const std::string& op, const std::string& fields, std::vecto
     else if (ev == "leaks") print_heap(e["leaks"], true);
     else if (ev == "macro") std::cout << YEL << e["m"]["text"].str() << RST << "\n";
     else if (ev == "layout" || ev == "source") std::cout << e["text"].str() << "\n";
-    else if (ev == "done" && e.has("why")) std::cout << YEL << "⟲ " << e["why"].str() << (e["why"].str() == "nothing to undo" ? "" : " — state rolled back to before this run") << RST << "\n";
+    else if (ev == "stopped") std::cout << YEL << "■ stopped" << (e["skipped"].a.empty() ? "" : "; " + std::to_string(e["skipped"].a.size()) + " later cell(s) skipped") << RST << "\n";
+    else if (ev == "done" && e.has("why")) std::cout << YEL << "⟲ " << e["why"].str() << (e["why"].str() == "nothing to undo" ? "" : " — this run was discarded") << RST << "\n";
   });
   if (show_cells && r["ok"].b) while (shown < show_cells->size()) print_entry((*show_cells)[shown++]);
   return r;
@@ -391,7 +392,8 @@ void help() {
             << "  .save F           append this session's inputs to F       .src        generated translation unit\n"
             << "  magics (as // comments in files): //%flags -O3  //%cflags ..  //%link -lfoo  //%check  //%asm\n"
             << "  in code: TIMEIT(expr)  zeno::plot(v), zeno::hist(v), zeno::timeit(f), zeno::display(x), zeno::here(), zeno::read_csv(path)\n"
-            << "  Ctrl-C interrupts a running cell (its effects are rolled back).\n";
+            << "  Ctrl-C stops a run at a clean point (zeno::interrupted() lets a cell wrap up; later cells are skipped).\n"
+            << "  Ctrl-\\ kills it, discarding the run.\n";
 }
 }  // namespace
 
@@ -417,7 +419,8 @@ int run_main(const std::string& path) {
 
 int tui_main(const std::string& path) {
   Kernel k; k.mode = "tui"; k.start(); g_kernel = &k;
-  signal(SIGINT, [](int) { if (g_kernel) g_kernel->interrupt(); });
+  signal(SIGINT, [](int) { if (g_kernel) g_kernel->interrupt(false); });   // Ctrl-C: stop at a clean point
+  signal(SIGQUIT, [](int) { if (g_kernel) g_kernel->interrupt(true); });   // Ctrl-\: kill, discarding the run
   std::cout << BLD << "Zeno" << RST << DIM << " — C++ notebook. .help for commands, Ctrl-D to quit." << RST << "\n";
   g_root = path; load_project();
   if (!g_root.empty()) print_tree(2);

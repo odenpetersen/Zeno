@@ -37,7 +37,9 @@ void Kernel::stop() {
   pid = -1;
 }
 
-void Kernel::interrupt() { if (running > 0) kill(running, SIGKILL); }
+// Soft: ask the running batch to stop at a clean point (the kernel's tip forwards SIGTERM, then kills it
+// if it doesn't respond within a second). Hard: kill it now, discarding the run.
+void Kernel::interrupt(bool hard) { if (running > 0) kill(hard || chain.empty() ? running : chain.back(), hard ? SIGKILL : SIGTERM); }
 
 J Kernel::call(const std::string& op, const std::string& fields,
                const std::function<void(const std::string&, const std::string&)>& on) {

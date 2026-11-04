@@ -155,7 +155,8 @@ canvas#heapmap{width:100%;height:90px;border-radius:6px;background:var(--code)}
  <h1 id="title">Zeno</h1>
  <button class="pri" id="sync" title="Bring everything up to date: re-run only what changed or depends on a change, so the state is as if the whole notebook had run top to bottom">⟳ Sync</button>
  <button id="runall" title="Restart the kernel and run every cell">Run all</button>
- <button id="intr" title="Interrupt (the run is rolled back)">■ Interrupt</button>
+ <button id="intr" title="Stop the run at a clean point: the running cell can check zeno::interrupted() and wrap up, later cells are skipped, and what ran is kept. A cell that doesn't respond within a second is killed. (Ctrl-C; press again to kill)">■ Stop</button>
+ <button id="kill" title="Kill the run now and discard it; the state is as before it (Ctrl-\)">Kill</button>
  <button id="undo" title="Roll back the last run">⟲ Undo</button>
  <button id="restart">Restart</button>
  <button id="extract" style="display:none">Move selected to file…</button>
@@ -604,7 +605,9 @@ function toggleSel(uid) {
 }
 let lastD = 0, lastDeleted = null;
 document.addEventListener('keydown', e => {
-  if (e.target.closest('.term,input,textarea,aside') || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.target.closest('.term,input,textarea,aside')) return;
+  if (e.ctrlKey && busy && ((e.key === 'c' && !getSelection().toString()) || e.key === '\\')) { e.preventDefault(); interrupt(e.key === '\\'); return; }
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
   const items = navItems(), cur = curEl(), i = items.indexOf(cur), gh = cur?.classList.contains('gh');
   const go = e2 => { e.preventDefault(); focusEl(e2); };
   if (e.key === 'Enter' && e.shiftKey && cur) {   // run: the cell, or everything in the group, then move on
@@ -790,10 +793,16 @@ function runHandler(show) {
         starts.forEach((m, i) => { const nx = starts[i + 1]; const dt = nx ? nx.t - m.t : starts[0].t + e.run_ms - m.t; const c = cells[m.uid]; if (c && dt >= 0) c.meta.textContent = dt < 1 ? (dt * 1000).toFixed(0) + ' µs' : dt.toFixed(1) + ' ms'; });
         break;
       }
+      case 'stopped': {
+        if (e.uid) { const d = el('div', 'err'); d.innerHTML = '■ <b>stopped early</b> — what it did so far is kept; it will re-run (from the declarations it modifies) next time'; (cellOut(e.uid) || at()).append(d); }
+        e.skipped.forEach(u => { const o = cellOut(u); if (o) o.append(el('div', 'vdim', 'skipped: the run was stopped')); });
+        toast('stopped' + (e.skipped.length ? '; ' + e.skipped.length + ' later cell(s) skipped' : ''));
+        break;
+      }
       case 'restored': toast('kernel state was lost (' + e.why + '); restored to an earlier snapshot'); break;
       case 'done':
         if (e.ok === false && e.why) {
-          const d = el('div', 'err'); d.innerHTML = '⟲ <b>' + esc(e.why) + '</b> — this run was rolled back' + (uids.length > 1 ? '; the cells above it in the run were undone too' : '');
+          const d = el('div', 'err'); d.innerHTML = '⟲ <b>' + esc(e.why) + '</b> — this run was discarded' + (uids.length > 1 ? ', including the cells before it in the run' : '');
           at().append(d);
           const k = uids.indexOf(cur); uids.slice(0, Math.max(0, k)).forEach(u => cells[u]?.el.classList.add('undone'));
         }
@@ -1139,7 +1148,16 @@ $('#tchat').onclick = () => { chatFocus = null; side('chat'); };
 $('#theap').onclick = () => side('heap');
 $('#runall').onclick = () => sync('', null, 'all');
 $('#sync').onclick = () => sync('');
-$('#intr').onclick = () => api('/api/interrupt');
+// First press asks the run to stop at a clean point; a second press (or Kill, or Ctrl-\) kills it.
+let stopAsked = 0;
+function interrupt(hard) {
+  hard = hard || Date.now() - stopAsked < 10000;
+  stopAsked = hard ? 0 : Date.now();
+  api('/api/interrupt', {hard});
+  toast(hard ? 'killed: the run is discarded' : 'stopping at the next clean point… (again to kill)');
+}
+$('#intr').onclick = () => interrupt(false);
+$('#kill').onclick = () => interrupt(true);
 $('#undo').onclick = async () => { const evs = await op('undo'); const d = evs.find(e => e.ev === 'done'); toast(d && d.ok ? 'rolled back the last run' : (d?.why || 'nothing to undo')); markDirty(); if (sideMode) refreshSide(); };
 $('#restart').onclick = async () => { await api('/api/restart'); Object.values(outs).forEach(o => o.textContent = ''); toast('kernel restarted'); markDirty(); };
 $('#extract').onclick = async () => {

@@ -164,13 +164,27 @@ long rss_kb() { long a = 0, b = 0; FILE* f = fopen("/proc/self/statm", "r"); if 
 
 // Wait for a child, but if the frontend dies meanwhile (its end of the request pipe closes), take the whole
 // kernel down with it: otherwise a long-running cell would keep going as an orphan.
-void wait_child(pid_t pid, int& status) {
+//
+// A stop request (SIGTERM to this process) is passed on to a running batch, which gets a second to acknowledge
+// it through `ack` (by checking zeno::interrupted() or reaching its next statement cell); otherwise it's killed.
+volatile sig_atomic_t g_stop = 0;
+bool g_grace_expired = false;
+void wait_child(pid_t pid, int& status, int ack = -1) {
   int pfd = (int)syscall(SYS_pidfd_open, pid, 0);   // readable when the child exits; else poll every 200 ms
+  bool asked = false, acked = false;
+  double deadline = 0;
   for (;;) {
     pid_t r = waitpid(pid, &status, WNOHANG);
     if (r == pid || (r < 0 && errno != EINTR)) break;
-    pollfd p[2] = {{3, 0, 0}, {pfd, POLLIN, 0}};
-    if (poll(p, pfd >= 0 ? 2 : 1, pfd >= 0 ? -1 : 200) > 0 && (p[0].revents & (POLLHUP | POLLERR | POLLNVAL))) kill(0, SIGKILL);
+    if (g_stop && !asked) { asked = true; g_stop = 0; if (ack < 0) kill(pid, SIGKILL); else { kill(pid, SIGTERM); deadline = rt::now_ms() + 1000; } }
+    bool waiting = asked && !acked && ack >= 0;
+    if (waiting && rt::now_ms() > deadline) { kill(pid, SIGKILL); g_grace_expired = true; waiting = false; acked = true; }
+    pollfd p[3] = {{3, 0, 0}, {pfd, POLLIN, 0}, {waiting ? ack : -1, POLLIN, 0}};
+    int timeout = waiting ? std::max(1, (int)(deadline - rt::now_ms())) : pfd >= 0 ? -1 : 200;
+    if (poll(p, 3, timeout) > 0) {
+      if (p[0].revents & (POLLHUP | POLLERR | POLLNVAL)) kill(0, SIGKILL);
+      if (p[2].revents) acked = true;
+    }
   }
   if (pfd >= 0) close(pfd);
 }
@@ -272,12 +286,16 @@ void op_exec(const J& r) {
   }
   if (g.want_asm) emit("{\"ev\":\"asm\",\"asm\":" + asm_json(id, files) + "}");
 
-  int okp[2]; if (pipe(okp)) return done(",\"ok\":false");
+  int okp[2], ack[2]; if (pipe(okp)) return done(",\"ok\":false");
+  if (pipe(ack)) ack[0] = ack[1] = -1;
   fflush(stdout);
+  g_stop = 0; g_grace_expired = false;
   pid_t pid = fork();
   if (pid == 0) {
-    close(okp[0]);
+    close(okp[0]); close(ack[0]);
     is_root = false;
+    rt::stop_flag = 0; rt::stop_fd = ack[1];
+    struct sigaction term{}; term.sa_handler = [](int) { rt::stop_flag = 1; }; sigaction(SIGTERM, &term, nullptr);
     install_crash_handlers();
     emit("{\"ev\":\"start\",\"pid\":" + std::to_string(getpid()) + "}");
     rt::mark = {};
@@ -317,17 +335,23 @@ void op_exec(const J& r) {
          ",\"allocs\":" + std::to_string(h1.allocs - h0.allocs) + ",\"frees\":" + std::to_string(h1.frees - h0.frees) +
          ",\"alloc_bytes\":" + std::to_string(h1.bytes - h0.bytes) + ",\"heap_net\":" + std::to_string((long)h1.live - (long)h0.live) +
          ",\"heap_peak\":" + std::to_string(h1.peak - h0.live) + ",\"heap_live\":" + std::to_string(h1.live) + ",\"stack\":" + std::to_string(stack) + "}");
+    std::string stopped = rt::stop_report();   // also resets, since this process now becomes the tip
+    if (!stopped.empty()) emit(stopped);
+    if (rt::stop_fd >= 0) close(rt::stop_fd);
+    rt::stop_fd = -1;
+    struct sigaction tip{}; tip.sa_handler = [](int) { g_stop = 1; }; sigaction(SIGTERM, &tip, nullptr);
     (void)!write(okp[1], "1", 1); close(okp[1]);
     return done(",\"ok\":true");
   }
-  close(okp[1]);
+  close(okp[1]); close(ack[1]);
   int status = 0;
-  wait_child(pid, status);
+  wait_child(pid, status, ack[0]);
+  close(ack[0]);
   char b; bool committed = read(okp[0], &b, 1) == 1;
   close(okp[0]);
   if (WIFEXITED(status) && WEXITSTATUS(status) == 42) return done(",\"ok\":true,\"undo\":true");
   if (WIFEXITED(status) && WEXITSTATUS(status) == 0 && committed) return;   // frontend went away: cascade down the chain
-  std::string why = WIFSIGNALED(status) ? (WTERMSIG(status) == SIGKILL ? "interrupted" : std::string("killed by ") + sigabbrev_np(WTERMSIG(status)))
+  std::string why = WIFSIGNALED(status) ? (WTERMSIG(status) == SIGKILL ? (g_grace_expired ? "stopped: it didn't check zeno::interrupted() within a second, so the run was discarded" : "interrupted") : std::string("killed by ") + sigabbrev_np(WTERMSIG(status)))
                     : WEXITSTATUS(status) == 43 ? "exception" : "exit(" + std::to_string(WEXITSTATUS(status)) + ") called";
   if (!committed) return done(",\"ok\":false,\"why\":" + jq(why));
   emit("{\"ev\":\"restored\",\"why\":" + jq(why) + ",\"pid\":" + std::to_string(getpid()) + ",\"last\":" + std::to_string(st.last) + "}");
@@ -393,6 +417,7 @@ bool read_request(J& out) {
 
 int kernel_main() {
   setpgid(0, 0);
+  struct sigaction st{}; st.sa_handler = [](int) { g_stop = 1; }; sigaction(SIGTERM, &st, nullptr);   // no SA_RESTART: wakes the wait
   signal(SIGCHLD, SIG_DFL);
   signal(SIGPIPE, SIG_DFL);
   setvbuf(stdout, nullptr, _IOLBF, 0);

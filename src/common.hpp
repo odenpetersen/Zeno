@@ -79,7 +79,7 @@ struct Kernel {
   // Send a request; callbacks receive stdout text, stderr text and events until the "done" event (returned).
   J call(const std::string& op, const std::string& fields,
          const std::function<void(const std::string& stream, const std::string& data)>& on);
-  void interrupt();
+  void interrupt(bool hard = false);   // async-signal-safe
 };
 int kernel_main();
 int tui_main(const std::string& path);

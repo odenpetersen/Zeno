@@ -179,7 +179,29 @@ struct Perf {
   }
 };
 static Perf bench_perf;
+static std::string cur_uid, stopped_uid;
+static std::vector<std::string> skipped;
+static bool acked = false;
+static void ack_stop() {
+  if (acked) return;
+  acked = true;
+  if (rt::stop_fd >= 0) (void)!write(rt::stop_fd, "1", 1);
+}
+bool interrupted() {
+  if (!rt::stop_flag) return false;
+  if (stopped_uid.empty()) stopped_uid = cur_uid;
+  ack_stop();
+  return true;
+}
+std::ostream& null_stream() { static std::ostream s(nullptr); return s; }
+bool skip_cell() {
+  if (!rt::stop_flag) return false;
+  ack_stop();   // a cell boundary is a clean place to stop
+  skipped.push_back(cur_uid);
+  return true;
+}
 int cell_begin(const char* uid) {
+  cur_uid = uid;
   auto h = rt::heap_stats();
   emit("{\"ev\":\"cell\",\"uid\":" + jq(uid) + ",\"t\":" + num(rt::now_ms()) + ",\"allocs\":" + std::to_string(h.allocs) + ",\"bytes\":" + std::to_string(h.bytes) + "}");
   return 0;
@@ -408,6 +430,15 @@ table read_csv(const std::string& path, char sep) {
 namespace rt {
 bool web = false;
 Mark mark;
+volatile int stop_flag = 0;
+int stop_fd = -1;
+std::string stop_report() {
+  if (!stop_flag) return "";
+  std::string o = "{\"ev\":\"stopped\",\"uid\":" + jq(zeno::stopped_uid) + ",\"skipped\":[";
+  for (size_t i = 0; i < zeno::skipped.size(); ++i) o += (i ? "," : "") + jq(zeno::skipped[i]);
+  stop_flag = 0; zeno::acked = false; zeno::stopped_uid.clear(); zeno::skipped.clear();
+  return o + "]}";
+}
 double now_ms() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 Perf_ perf_begin() { auto* p = new zeno::Perf; p->begin(); return p; }
 zeno::counters perf_end(Perf_ p) { auto c = static_cast<zeno::Perf*>(p)->end(); delete static_cast<zeno::Perf*>(p); return c; }

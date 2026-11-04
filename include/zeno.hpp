@@ -336,6 +336,9 @@ inline std::ostream& operator<<(std::ostream& o, const bench& b) {
 // It expands to a loop inside a GNU statement expression rather than a lambda, so it sees locals without
 // capturing them; it works in cells, main and any function, but not in a namespace-scope initializer.
 // The timer hands out calibrated batches of iterations: grow the batch until it takes budget/10, then 7 runs.
+// True once the user asked to stop (Interrupt, Ctrl-C). A long cell can check it and wrap up, keeping what
+// it has done so far; one that doesn't check within a second is killed and its whole run discarded.
+bool interrupted();
 struct timer {
   using clk = std::chrono::steady_clock;
   const char* name; double budget; long n = 1, left = 0; int run = -1; clk::time_point t0 = clk::now(); std::vector<double> runs; bench b;
@@ -343,6 +346,16 @@ struct timer {
   bool more() { return left-- > 0 || next(); }
   bool next() {
     double dt = std::chrono::duration<double>(clk::now() - t0).count();
+    if (interrupted()) {   // stopped: report the rounds measured so far
+      if (run > 0) runs.push_back(dt * 1e9 / n);
+      if (runs.empty()) return false;
+      counters c = perf_end();
+      double m = std::accumulate(runs.begin(), runs.end(), 0.0) / runs.size(), sd = 0, it = runs.size() * double(n);
+      for (double x : runs) sd += (x - m) * (x - m);
+      b = {name, n, m, *std::min_element(runs.begin(), runs.end()), std::sqrt(sd / runs.size()), c.cycles / it, c.instructions / it,
+           c.cycles > 0 ? c.instructions / c.cycles : NAN, runs};
+      return false;
+    }
     if (run < 0) { if (dt > budget / 10 || n > (1L << 40)) { run = 0; perf_begin(); } else n *= 4; }
     else if (runs.push_back(dt * 1e9 / n), ++run == 7) {
       counters c = perf_end();
@@ -378,10 +391,16 @@ template <class T> int result(const char* uid, const T& v) {
     return 0;
   }
 }
+bool skip_cell();   // after a stop request: later statement cells of the batch don't run
+std::ostream& null_stream();
+// Expression cells skip too when they're really statements: a void call, or printing to a stream.
 template <class F> decltype(auto) wrap(F f) {
-  if constexpr (std::is_void_v<decltype(f())>) { f(); return nothing{}; } else return f();
+  using R = decltype(f());
+  if constexpr (std::is_void_v<R>) { if (!skip_cell()) f(); return nothing{}; }
+  else if constexpr (std::is_same_v<R, std::ostream&>) { if (skip_cell()) return null_stream(); return f(); }
+  else return f();
 }
-template <class F> int run(F f) { try { f(); } catch (...) { fail_current_exception(); } return 0; }
+template <class F> int run(F f) { if (skip_cell()) return 0; try { f(); } catch (...) { fail_current_exception(); } return 0; }
 template <class T> int reg(const char* name, const T& v, int cell) {
   if constexpr (!std::is_same_v<T, nothing>) reg_var(name, type_of<T>(), &v, sizeof(T), &expand_at<T>, cell);
   return 0;

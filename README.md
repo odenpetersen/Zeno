@@ -57,7 +57,12 @@ Each cell's toolbar has a **run ▾** menu (also on right-click of ▶), with ke
 - **Run everything above it too** (`A`): every earlier cell in file order, then this one.
 - **Run all** (header) restarts the kernel and runs every cell. **⟳ Sync** brings the whole notebook up to date.
 - **Dependencies** are by name: a cell depends on earlier cells that write a name it reads, including what the functions it calls read. A statement is taken to modify a name when it assigns or increments it, passes it to a function, takes its address or calls a method on it (other than `size()` and similar read-only ones). Reading, printing with `<<` or reading a member is not modifying. When in doubt it assumes modified, so it re-runs too much rather than too little.
-- **Every run is a transaction.** Each run executes in a `fork()` of the previous state. A crash, exception or Ctrl-C/Interrupt discards the child, and the state is exactly as before. ⟲ Undo steps back one run; nothing else rolls back.
+- **Every run is a transaction.** Each run executes in a `fork()` of the previous state. A crash, exception or kill discards the child, and the state is exactly as before. ⟲ Undo steps back one run; nothing else rolls back.
+- **Stopping a run** works like SIGTERM and SIGKILL:
+  - **■ Stop** (Ctrl-C) asks the run to stop at a clean point. A long cell can check `zeno::interrupted()` and wrap up, keeping what it has done; `TIMEIT` does, reporting the rounds measured so far. Later statements in the run are skipped, and the rest is kept. A stopped cell re-runs next time, rebuilding what it modified from its declaration.
+  - A cell that doesn't check within a second is killed, as below.
+  - **Kill** (Ctrl-\, or Stop twice) kills the run at once and discards it.
+  - Stopping the server (Ctrl-C, SIGTERM) or killing it outright takes the kernel and any running cell with it.
 - **Redeclaration works:** every cell gets a nested namespace, so the newest declaration of a name wins.
 
 ## Seeing values

@@ -151,7 +151,8 @@ std::string results_text(const std::string& uid) {
     else if (ev == "error") o += "[" + e["type"].str() + "] " + e["what"].str() + "\n";
     else if (ev == "crash") o += "[crash " + e["sig"].str() + "]\n" + e["bt"].str() + "\n";
     else if (ev == "rich") o += e.has("text") ? e["text"].str() + "\n" : "[" + e["mime"].str() + " output]\n";
-    else if (ev == "done" && e.has("why")) o += "[run rolled back: " + e["why"].str() + "]\n";
+    else if (ev == "done" && e.has("why")) o += "[run discarded: " + e["why"].str() + "]\n";
+    else if (ev == "stopped") o += "[stopped early by an interrupt]\n";
     else if (ev == "stats") o += "[stats] compile " + std::to_string((int)e["compile_ms"].num()) + " ms, run " + std::to_string(e["run_ms"].num()) + " ms\n";
   }
   return o.empty() ? "(ran; no output)" : o;
@@ -170,6 +171,7 @@ void run_cells(int fd, const std::vector<Src>& cells, const std::string& origin)
   std::map<std::string, std::string> keys;
   for (auto& c : cells) keys[c.uid] = ckey(c);
   std::string cur = cells.empty() ? "" : keys[cells[0].uid], tag = ",\"origin\":" + jq(origin) + "}";
+  std::set<std::string> skipped; std::string stopped;   // a stopped batch: cells that didn't run, and the one cut short
   Stream s(fd, "application/x-ndjson");
   auto emit = [&](const std::string& line) {
     s.chunk(line + "\n");
@@ -177,8 +179,9 @@ void run_cells(int fd, const std::vector<Src>& cells, const std::string& origin)
     J e = J::parse(line);
     std::string ev = e["ev"].str();
     if (ev == "cell") cur = keys[e["uid"].str()];
+    if (ev == "stopped") { stopped = e["uid"].str(); for (auto& u : e["skipped"].a) skipped.insert(u.str()); }
     std::lock_guard<std::mutex> l(g_rmu);
-    if (ev == "result") g_results[keys[e["uid"].str()]].push_back(line);
+    if (ev == "result" || (ev == "stopped" && !e["uid"].str().empty())) g_results[keys[e["uid"].str()]].push_back(line);
     else if (ev != "cell" && ev != "start" && ev != "batch" && !cur.empty()) g_results[cur].push_back(line);
   };
   emit("{\"ev\":\"batch\",\"id\":" + std::to_string(id) + ",\"uids\":[" + uids + "]}");
@@ -188,7 +191,9 @@ void run_cells(int fd, const std::vector<Src>& cells, const std::string& origin)
     if (kind == "ev") { if (d.find("\"ev\":\"restored\"") != std::string::npos) g_hist_unknown = true; emit(d); }
     else emit("{\"ev\":" + jq(kind) + ",\"s\":" + jq(d) + "}");
   });
-  if (done["ok"].b) { Batch b{id, {}}; for (auto& c : cells) b.keys.push_back(ckey(c)); g_hist.push_back(b); }
+  // A cell cut short is recorded under a key no cell has, so the planner sees its variables' history as wrong
+  // and rebuilds them; skipped cells didn't run at all.
+  if (done["ok"].b) { Batch b{id, {}}; for (auto& c : cells) if (!skipped.count(c.uid)) b.keys.push_back(ckey(c) + (c.uid == stopped ? "\x1fstopped" : "")); g_hist.push_back(b); }
   if (g_k.pid < 0) { g_hist.clear(); g_hist_unknown = false; }
 }
 
@@ -609,7 +614,7 @@ void handle(int fd) {
       if (r["ok"].b && !g_hist.empty()) g_hist.pop_back();
     } else kernel_stream(fd, o, fields_of(b, {"op"}));
   }
-  else if (p == "/api/interrupt") { g_k.interrupt(); respond(fd, 200, "application/json", "{}"); }
+  else if (p == "/api/interrupt") { g_k.interrupt(b["hard"].b); respond(fd, 200, "application/json", "{}"); }   // {hard}: kill instead of asking
   else if (p == "/api/restart") {
     std::lock_guard<std::mutex> l(g_kmu);
     g_k.stop(); g_k.start(); g_hist.clear(); g_hist_unknown = false;
@@ -726,13 +731,21 @@ int web_main(const std::string& root, int port, bool open_browser, const std::st
   std::printf("  serving %s — Ctrl-C to stop\n", std::filesystem::absolute(g_root).c_str());
   std::fflush(stdout);
   if (open_browser && (getenv("DISPLAY") || getenv("WAYLAND_DISPLAY"))) { if (fork() == 0) { int n = open("/dev/null", 1); dup2(n, 1); dup2(n, 2); execlp("xdg-open", "xdg-open", url.c_str(), (char*)nullptr); _exit(0); } }
-  static Kernel* kp = &g_k;
-  std::atexit([] { kp->stop(); unlink(g_server_file.c_str()); });
-  signal(SIGINT, [](int) { exit(0); });
-  signal(SIGTERM, [](int) { exit(0); });
+  // Ctrl-C / SIGTERM: the handler only writes to a pipe; shutting down happens here, outside the handler.
+  static int quit[2];
+  if (pipe2(quit, O_CLOEXEC)) { perror("pipe"); return 1; }
+  struct sigaction sa{}; sa.sa_handler = [](int) { (void)!write(quit[1], "q", 1); };
+  sigaction(SIGINT, &sa, nullptr); sigaction(SIGTERM, &sa, nullptr);
   for (;;) {
+    pollfd p[2] = {{s, POLLIN, 0}, {quit[0], POLLIN, 0}};
+    if (poll(p, 2, -1) < 0) continue;
+    if (p[1].revents) break;
     int c = accept(s, nullptr, nullptr);
     if (c < 0) continue;
     std::thread(handle, c).detach();
   }
+  g_k.stop();   // kills the kernel and any running cell; other threads may be mid-request, so skip static destructors
+  unlink(g_server_file.c_str());
+  std::fflush(stdout);
+  _exit(0);
 }
