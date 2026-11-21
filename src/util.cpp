@@ -30,18 +30,33 @@ struct Parser {
     else if (cp < 0x10000) { o += char(0xE0 | cp >> 12); o += char(0x80 | ((cp >> 6) & 63)); o += char(0x80 | (cp & 63)); }
     else { o += char(0xF0 | cp >> 18); o += char(0x80 | ((cp >> 12) & 63)); o += char(0x80 | ((cp >> 6) & 63)); o += char(0x80 | (cp & 63)); }
   }
+  // Malformed or truncated input (a model server cut off mid-reply) parses as far as it can; nothing reads past the end.
+  char at() const { return i < s.size() ? s[i] : '\0'; }
+  unsigned hex4() {
+    unsigned cp = 0;
+    for (int k = 0; k < 4; ++k, ++i) {
+      char c = at(); int d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+      if (d < 0) return 0xFFFD;
+      cp = cp * 16 + d;
+    }
+    return cp;
+  }
   std::string str() {
     std::string o; ++i;
     while (i < s.size() && s[i] != '"') {
       char c = s[i++];
       if (c != '\\') { o += c; continue; }
+      if (i >= s.size()) break;
       char e = s[i++];
       switch (e) {
         case 'n': o += '\n'; break; case 't': o += '\t'; break; case 'r': o += '\r'; break;
         case 'b': o += '\b'; break; case 'f': o += '\f'; break;
         case 'u': {
-          unsigned cp = std::stoul(std::string(s.substr(i, 4)), nullptr, 16); i += 4;
-          if (cp >= 0xD800 && cp < 0xDC00 && s.substr(i, 2) == "\\u") { cp = 0x10000 + ((cp - 0xD800) << 10) + (std::stoul(std::string(s.substr(i + 2, 4)), nullptr, 16) - 0xDC00); i += 6; }
+          unsigned cp = hex4();
+          if (cp >= 0xD800 && cp < 0xDC00 && s.substr(i, 2) == "\\u") {
+            i += 2; unsigned lo = hex4();
+            cp = lo >= 0xDC00 && lo < 0xE000 ? 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00) : 0xFFFD;
+          }
           utf8(o, cp); break;
         }
         default: o += e;
@@ -55,18 +70,35 @@ struct Parser {
     if (i >= s.size()) return j;
     char c = s[i];
     if (c == '{') {
-      j.t = J::Obj; ++i; ws();
-      if (s[i] == '}') { ++i; return j; }
-      for (;;) { ws(); std::string k = str(); ws(); ++i; j.o.emplace_back(k, val()); ws(); if (s[i++] == '}') break; }
+      j.t = J::Obj; ++i;
+      for (;;) {
+        ws(); if (at() != '"') { if (at() == '}') ++i; break; }
+        std::string k = str(); ws();
+        if (at() != ':') break;
+        ++i; j.o.emplace_back(k, val()); ws();
+        if (at() != ',') { if (at() == '}') ++i; break; }
+        ++i;
+      }
     } else if (c == '[') {
-      j.t = J::Arr; ++i; ws();
-      if (s[i] == ']') { ++i; return j; }
-      for (;;) { j.a.push_back(val()); ws(); if (s[i++] == ']') break; }
+      j.t = J::Arr; ++i;
+      for (ws(); at() && at() != ']';) {
+        size_t from = i;
+        j.a.push_back(val()); ws();
+        if (at() == ',') ++i;
+        else if (at() != ']' || i == from) break;
+      }
+      if (at() == ']') ++i;
     } else if (c == '"') { j.t = J::Str; j.s = str(); }
     else if (s.substr(i, 4) == "true") { j.t = J::Bool; j.b = true; i += 4; }
     else if (s.substr(i, 5) == "false") { j.t = J::Bool; i += 5; }
     else if (s.substr(i, 4) == "null") { i += 4; }
-    else { j.t = J::Num; char* e; j.n = std::strtod(s.data() + i, &e); i = e - s.data(); }
+    else {   // copy out: the view needn't be NUL-terminated
+      char buf[64]; size_t n = 0;
+      while (n < sizeof buf - 1 && i + n < s.size() && s[i + n] && std::strchr("+-.0123456789eE", s[i + n])) { buf[n] = s[i + n]; ++n; }
+      buf[n] = 0;
+      if (n) { j.t = J::Num; j.n = std::strtod(buf, nullptr); }
+      i += n;
+    }
     return j;
   }
 };
