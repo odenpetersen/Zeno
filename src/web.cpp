@@ -124,7 +124,7 @@ std::string key_of(const std::string& uid) { Src c; return find_cell(g_root, uid
 std::deque<std::pair<long, std::string>> g_log;               // recent events, for /api/events subscribers
 long g_seq = 0;
 // g_hist mirrors the kernel's snapshot chain: one entry per successful run, holding the cells it executed.
-struct Batch { int id; std::vector<std::string> keys; };
+struct Batch { int id; std::vector<std::string> keys; std::vector<int> idx; };   // idx: each key's position in the batch
 std::vector<Batch> g_hist;
 bool g_hist_unknown = false;   // the kernel lost state behind our back: next sync restarts
 
@@ -158,6 +158,27 @@ std::string results_text(const std::string& uid) {
   return o.empty() ? "(ran; no output)" : o;
 }
 
+// The kernel re-declares every earlier cell's functions, types and variables for later cells. Those of a cell
+// since deleted or edited (and of older runs of a cell) are dropped, so a removed function doesn't linger
+// (or keep printing its warnings), unless a cell kept, or about to run, still mentions what they declare.
+std::string drop_json(const std::vector<Src>& running) {
+  std::set<std::string> live, seen, used;
+  for (auto& c : cells_under(g_root, "")) live.insert(ckey(c));
+  for (auto& c : running) { Deps d = deps_of(c.code); used.insert(d.uses.begin(), d.uses.end()); }
+  std::string o;
+  for (size_t b = g_hist.size(); b-- > 0;)
+    for (size_t j = g_hist[b].keys.size(); j-- > 0;) {
+      const std::string& k = g_hist[b].keys[j];
+      std::string code = k.substr(k.find('\x1f') + 1); code = code.substr(0, code.find('\x1f'));
+      Deps d = deps_of(code);
+      bool keep = live.count(k) && seen.insert(k).second;
+      for (auto& n : d.defs) keep = keep || used.count(n);
+      if (keep) { for (auto& n : d.defs) used.erase(n); used.insert(d.uses.begin(), d.uses.end()); }   // later mentions resolve here, hiding older ones
+      else o += (o.empty() ? "" : ",") + jq("__c" + std::to_string(g_hist[b].id) + "_" + std::to_string(g_hist[b].idx[j]));
+    }
+  return "[" + o + "]";
+}
+
 // Run cells: stream events to the requester, remember them per cell, and broadcast them.
 void run_cells(int fd, const std::vector<Src>& cells, const std::string& origin) {
   int id;
@@ -187,13 +208,18 @@ void run_cells(int fd, const std::vector<Src>& cells, const std::string& origin)
   emit("{\"ev\":\"batch\",\"id\":" + std::to_string(id) + ",\"uids\":[" + uids + "]}");
   std::lock_guard<std::mutex> l(g_kmu);
   if (g_k.pid < 0) g_k.start();
-  J done = g_k.call("exec", "\"id\":" + std::to_string(id) + ",\"cells\":" + cells_json(cells), [&](const std::string& kind, const std::string& d) {
+  J done = g_k.call("exec", "\"id\":" + std::to_string(id) + ",\"drop\":" + drop_json(cells) + ",\"cells\":" + cells_json(cells), [&](const std::string& kind, const std::string& d) {
     if (kind == "ev") { if (d.find("\"ev\":\"restored\"") != std::string::npos) g_hist_unknown = true; emit(d); }
     else emit("{\"ev\":" + jq(kind) + ",\"s\":" + jq(d) + "}");
   });
   // A cell cut short is recorded under a key no cell has, so the planner sees its variables' history as wrong
   // and rebuilds them; skipped cells didn't run at all.
-  if (done["ok"].b) { Batch b{id, {}}; for (auto& c : cells) if (!skipped.count(c.uid)) b.keys.push_back(ckey(c) + (c.uid == stopped ? "\x1fstopped" : "")); g_hist.push_back(b); }
+  if (done["ok"].b) {
+    Batch b{id, {}, {}};
+    for (size_t j = 0; j < cells.size(); ++j)
+      if (!skipped.count(cells[j].uid)) { b.keys.push_back(ckey(cells[j]) + (cells[j].uid == stopped ? "\x1fstopped" : "")); b.idx.push_back((int)j); }
+    g_hist.push_back(b);
+  }
   if (g_k.pid < 0) { g_hist.clear(); g_hist_unknown = false; }
 }
 

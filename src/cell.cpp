@@ -61,6 +61,10 @@ std::vector<std::string> tokens(const std::string& s, size_t max = 400) {
 }
 
 // Split source into top-level chunks ending in ';' or a closing '}' (function bodies, blocks).
+struct Kind;
+Kind classify(const Chunk& c);
+bool defines_function(const std::string& text);
+
 std::vector<Chunk> split(const std::string& s) {
   std::vector<Chunk> out;
   std::string pending;   // statement pragmas attach to the next chunk
@@ -93,7 +97,8 @@ std::vector<Chunk> split(const std::string& s) {
         size_t k = skip_ws(s, i + 1);
         if (k >= n) { ++i; term = true; break; }
         char nc = s[k];
-        if (nc == ';' || std::string_view(",)(.-[=?:<>+*/&|^!").find(nc) != std::string_view::npos) continue;
+        // `}` then an operator continues the expression (`}[0]`, `}(args)`), but not after a function body
+        if (nc == ';' || (std::string_view(",)(.-[=?:<>+*/&|^!").find(nc) != std::string_view::npos && !defines_function(s.substr(st, i + 1 - st)))) continue;
         std::string w = idstart(nc) ? word_at(s, k) : "";
         bool typedef_ = first == "struct" || first == "class" || first == "union" || first == "enum" || first == "typedef";
         if (w == "else" || w == "while" || w == "catch" || (!w.empty() && typedef_)) continue;
@@ -174,6 +179,8 @@ Kind classify(const Chunk& c) {
   return {'s', ""};
 }
 
+bool defines_function(const std::string& text) { Kind k = classify({text, 0, true}); return k.k == 'f' && k.fn; }
+
 std::string strip_static(std::string s) {
   size_t i = skip_ws(s, 0);
   if (s.compare(i, 7, "static ") == 0) s.erase(i, 7);
@@ -226,7 +233,8 @@ Gen gen_batch(const std::vector<Src>& cells, int id) {
     // Must nest exactly like the copy in `header`, so this cell and later ones name the same entities.
     std::string ns = "__c" + sid + "_" + std::to_string(&src - cells.data());
     size_t header_mark = g.header.size(), body_mark = g.body.size();
-    g.header += "namespace " + ns + " {\n";
+    std::string open = "namespace " + ns + " {\n/*zeno:" + ns + "{*/\n";   // markers let the kernel drop this cell's declarations
+    g.header += open;
     g.body += "\nstatic const int " + var("__zeno_m") + " = ::zeno::cell_begin(" + uid + ");";
     for (auto& c : split(code)) {
       Kind k = classify(c);
@@ -300,8 +308,8 @@ Gen gen_batch(const std::vector<Src>& cells, int id) {
       }
       g.body += "\n";
     }
-    if (g.header.size() == header_mark + ns.size() + 13) g.header.resize(header_mark);   // declared nothing
-    else { g.ns.push_back(ns); g.body.insert(body_mark, "\nnamespace " + ns + " {"); }
+    if (g.header.size() == header_mark + open.size()) g.header.resize(header_mark);   // declared nothing
+    else { g.header += "/*zeno:" + ns + "}*/\n"; g.ns.push_back(ns); g.body.insert(body_mark, "\nnamespace " + ns + " {"); }
     for (auto& v : cell_values) g.values.push_back({src.uid, v, g.ns.size()});
   }
   g.body += "static const int __zeno_end = ::zeno::cell_mark(1);\n" + std::string(g.ns.size(), '}') + "\n";
