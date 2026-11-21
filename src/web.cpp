@@ -364,7 +364,9 @@ std::string chat_system(const std::string& focus, const J& range) {
       "zeno::read_csv(path), zeno::here() (gdb stack snapshot). Magic comment lines: //%flags -O3, //%link -lfoo or file.cpp.\n\n"
       "To propose a change to an existing cell, reply with a fenced block whose info string is `cpp replace=<uid>`; to add a new "
       "cell after one, use `cpp after=<uid>` (the uid without brackets, e.g. `cpp replace=main.cpp:4`). The user applies them with one click. Keep cells small: one statement each. Be concise.\n\n"
-      "Notebook outline (uids in brackets):\n" + outline_text(g_root, 10000);
+      "The notebook (cell uids in brackets):\n";
+  std::string all = outline_text(g_root, 24000, true);   // every cell in full when it fits, else an outline
+  sys += all.find("… (truncated)") == std::string::npos ? all : "(an outline: only each cell's first line)\n" + outline_text(g_root, 10000);
   Src c;
   if (!focus.empty() && find_cell(g_root, focus, c))
     sys += "\nThe user is looking at cell [" + focus + "]:\n```cpp\n" + c.code + "\n```\nIts last run:\n" + results_text(focus) + "\n";

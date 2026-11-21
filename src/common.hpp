@@ -71,7 +71,7 @@ void save_model_config(const Model& m);
 std::string chat(const std::string& messages_json, const std::function<void(const std::string&)>& on, int max_tokens = 0,
                  bool think = true, const std::function<void()>& thinking = {});
 std::vector<std::string> complete(const std::string& context, const std::string& prefix, const std::string& suffix);
-std::string outline_text(const std::string& root, size_t limit = 12000);   // compact outline with cell uids, for prompts and agents
+std::string outline_text(const std::string& root, size_t limit = 12000, bool full = false);   // outline with cell uids (full: whole cells), for prompts and agents
 
 // ---------------------------------------------------------------- kernel client (frontends)
 struct Kernel {

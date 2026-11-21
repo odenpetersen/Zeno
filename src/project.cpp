@@ -271,7 +271,7 @@ std::string read_region(const std::string& root, const std::string& file, size_t
 }
 
 // A compact outline for prompts and agents: headings, includes, and each cell's uid with its first line.
-std::string outline_text(const std::string& root, size_t limit) {
+std::string outline_text(const std::string& root, size_t limit, bool full) {
   std::string o;
   std::function<void(const J&, int)> walk = [&](const J& n, int d) {
     if (o.size() > limit) return;
@@ -282,6 +282,7 @@ std::string outline_text(const std::string& root, size_t limit) {
     else if (k == "inc") { o += ind + "[" + n["uid"].str() + "] " + n["text"].str() + "\n"; if (n.has("file")) for (auto& c : n["file"]["kids"].a) walk(c, d + 1); }
     else if (k == "code") {
       std::string t = n["text"].str(); size_t nl = t.find('\n');
+      if (full) { std::string r; for (char ch : t) { r += ch; if (ch == '\n') r += ind + "  "; } t = r; nl = std::string::npos; }
       o += ind + "[" + n["uid"].str() + "] " + (nl == std::string::npos ? t : t.substr(0, nl) + " …") + "\n";
     } else if (k == "md") { std::string t = n["text"].str(); o += ind + "// " + t.substr(0, std::min(t.find('\n'), (size_t)100)) + "\n"; }
   };
