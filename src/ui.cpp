@@ -32,6 +32,9 @@ main{flex:1;min-width:0;max-width:1100px;margin:0 auto;padding:16px 16px 40vh}
 aside{width:420px;max-width:45vw;position:sticky;top:49px;height:calc(100vh - 49px);overflow:auto;border-left:1px solid var(--line);background:var(--panel);padding:12px;display:none}
 aside.open{display:block}
 aside h2{font-size:13px;margin:0 0 8px;text-transform:uppercase;letter-spacing:.04em;color:var(--ink2)}
+.ref summary{cursor:pointer;font-family:var(--mono,monospace);padding:3px 0}.refbody{font-size:12px;padding:4px 0 10px;overflow-x:auto}
+.refbody table{border-collapse:collapse}.refbody td,.refbody th{padding:2px 4px;vertical-align:top;text-align:left}.refbody .t-dsc td{border-top:1px solid var(--line)}
+.refbody pre,.refbody code,.refbody tt,.refbody .t-dcl{font-family:var(--mono,monospace)}.refbody pre{background:var(--code);padding:6px;overflow-x:auto}
 .grp{margin:2px 0}
 .gh{display:flex;align-items:center;gap:6px;padding:3px 4px;border-radius:6px;cursor:pointer;user-select:none}
 .gh:hover{background:var(--panel)}
@@ -162,7 +165,7 @@ canvas#heapmap{width:100%;height:90px;border-radius:6px;background:var(--code)}
  <button id="extract" style="display:none">Move selected to file…</button>
  <span class="sp"></span>
  <span id="branch"></span> <span id="status">idle</span>
- <button id="tchat">Assistant</button><button id="tvars">Variables</button><button id="theap">Heap</button>
+ <button id="tchat">Assistant</button><button id="tvars">Variables</button><button id="theap">Heap</button><button id="tref" title="cppreference pages for the std names in the selected cell">Reference</button>
 </header>
 <div id="wrap"><main id="doc"></main><aside id="side"></aside></div>
 <div class="toast" id="toast"></div>
@@ -587,6 +590,7 @@ function focus(uid) {
   curEl()?.classList.remove('focus');
   focusUid = uid; focusKey = null;
   if (uid && cells[uid]) { cells[uid].el.classList.add('focus'); cells[uid].el.scrollIntoView({block: 'nearest'}); }
+  if (sideMode === 'ref' && $('#side').classList.contains('open')) refreshSide();
 }
 function focusEl(e) {
   if (!e) return;
@@ -664,7 +668,7 @@ async function run(target, kind) {
   const h = runHandler();
   await stream('/api/run', {target, kind, origin: ME}, h);
   markDirty();
-  if ($('#side').classList.contains('open') && sideMode !== 'chat') refreshSide();
+  if ($('#side').classList.contains('open') && sideMode !== 'chat' && sideMode !== 'ref') refreshSide();
 }
 // `show`: also reveal that cell's value (Shift+Enter), so running a cell visibly does something.
 // mode: sync (default: the least re-running that leaves the state as if the cell and everything it depends on had
@@ -676,7 +680,7 @@ async function sync(upto, show, mode) {
   if (up && show) { const r = cellOut(show)?.querySelector('.res:not(.preview)'); if (r && !r.nextElementSibling?.classList.contains('v')) r.click(); }
   if (up) toast(upto ? 'up to date — nothing to re-run (r runs it anyway)' : 'everything is up to date');
   markDirty();
-  if ($('#side').classList.contains('open') && sideMode !== 'chat') refreshSide();
+  if ($('#side').classList.contains('open') && sideMode !== 'chat' && sideMode !== 'ref') refreshSide();
 }
 function runMenu(uid, at) {
   document.querySelector('.menu')?.remove();
@@ -1004,6 +1008,7 @@ let sideMode = null;
 async function refreshSide() {
   const s = $('#side'); s.textContent = '';
   if (sideMode === 'chat') return chatPanel(s);
+  if (sideMode === 'ref') return refPanel(s);
   if (sideMode === 'vars') {
     s.append(el('h2', '', 'Variables'));
     const evs = await op('vars');
@@ -1040,6 +1045,57 @@ async function refreshSide() {
     };
     s.append(el('h2', '', 'Leaks'), lb);
   }
+}
+// ---------------------------------------------------------------- reference
+// cppreference pages for the std names in the selected cell. The page HTML is from the network, so only an
+// allowlist of tags and attributes is kept; links to other cppreference pages open in place.
+const refOpen = new Set();
+async function refPanel(s) {
+  s.append(el('h2', '', 'Reference'));
+  const c = cells[focusUid];
+  if (!c) { s.append(el('div', 'vdim', 'select a cell to see the std names it uses')); return; }
+  const r = await api('/api/refs', {uid: focusUid});
+  if (c !== cells[focusUid] || sideMode !== 'ref') return;
+  if (r.error) { s.append(el('div', 'vdim', r.error)); return; }
+  if (!r.names.length) { s.append(el('div', 'vdim', 'no std names in this cell')); return; }
+  for (const n of r.names) {
+    const d = el('details', 'ref'), body = el('div', 'refbody');
+    d.append(el('summary', '', n.name), body);
+    d.ontoggle = () => { if (d.open) { refOpen.add(n.name); if (!body.childNodes.length) refLoad(body, n.name, []); } else refOpen.delete(n.name); };
+    s.append(d);
+    if (refOpen.has(n.name)) d.open = true;
+  }
+}
+async function refLoad(body, what, back) {
+  body.textContent = 'loading…';
+  const r = await api('/api/ref', {name: what});
+  body.textContent = '';
+  if (back.length) { const b = el('button', '', '← back'); b.onclick = () => refLoad(body, back[back.length - 1], back.slice(0, -1)); body.append(b); }
+  if (r.error) { body.append(el('div', 'vdim', r.error)); return; }
+  const top = el('div'), a = el('a', '', 'open on cppreference ↗'); a.href = r.url; a.target = '_blank'; a.rel = 'noopener';
+  top.append(el('b', '', new DOMParser().parseFromString(r.title, 'text/html').body.textContent + '  '), a); body.append(top);
+  const doc = new DOMParser().parseFromString(r.html, 'text/html');
+  doc.querySelectorAll('.t-navbar,.editsection,#toc,.t-plot').forEach(e => e.remove());
+  body.append(refClean(doc.body, what, back));
+}
+function refClean(n, what, back) {
+  const keep = /^(DIV|SPAN|P|A|B|I|EM|STRONG|CODE|PRE|TT|TABLE|TBODY|THEAD|TR|TD|TH|UL|OL|LI|DL|DT|DD|H2|H3|H4|H5|BR|HR|SUP|SUB|SMALL)$/;
+  const out = document.createDocumentFragment();
+  for (const c of n.childNodes) {
+    if (c.nodeType === 3) { out.append(c.textContent); continue; }
+    if (c.nodeType !== 1 || /^(SCRIPT|STYLE|IFRAME|OBJECT|EMBED|FORM|INPUT|BUTTON|TEXTAREA|SELECT|LINK|META|NOSCRIPT|SVG|MATH|IMG)$/.test(c.tagName)) continue;
+    if (!keep.test(c.tagName)) { out.append(refClean(c, what, back)); continue; }
+    const e = document.createElement(c.tagName);
+    for (const at of ['class', 'colspan', 'rowspan']) if (c.hasAttribute(at)) e.setAttribute(at, c.getAttribute(at));
+    if (c.tagName === 'A') {
+      const h = c.getAttribute('href') || '', m = /^\/(?:w\/)?(cpp\/[\w\/.-]+?)(\.html)?(#.*)?$/.exec(h);
+      if (m) { e.href = '#'; e.onclick = ev => { ev.preventDefault(); refLoad(e.closest('.refbody'), m[1], [...back, what]); }; }
+      else if (/^https?:\/\//.test(h)) { e.href = h; e.target = '_blank'; e.rel = 'noopener'; }
+    }
+    e.append(refClean(c, what, back));
+    out.append(e);
+  }
+  return out;
 }
 // ---------------------------------------------------------------- assistant
 let chatMsgs = JSON.parse(sessionStorage.getItem('zeno.chat') || '[]'), chatFocus = null;
@@ -1146,6 +1202,7 @@ function side(mode) {
 $('#tvars').onclick = () => side('vars');
 $('#tchat').onclick = () => { chatFocus = null; side('chat'); };
 $('#theap').onclick = () => side('heap');
+$('#tref').onclick = () => side('ref');
 $('#runall').onclick = () => sync('', null, 'all');
 $('#sync').onclick = () => sync('');
 // First press asks the run to stop at a clean point; a second press (or Kill, or Ctrl-\) kills it.

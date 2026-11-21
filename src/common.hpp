@@ -44,6 +44,11 @@ Gen gen_batch(const std::vector<Src>& cells, int id);
 // decl_only: types/functions only, no runtime effects. mods: the uses that may be modified (a guess from the tokens).
 struct Deps { std::set<std::string> defs, uses, mods; bool decl_only = true; };
 Deps deps_of(const std::string& code);
+std::vector<std::string> code_tokens(const std::string& s);   // identifiers and operators; comments skipped, literals as ""
+
+// ---------------------------------------------------------------- reference pages (cppreference)
+std::string ref_names_json(const std::string& code, bool using_std);   // [{name, link}] of std names in the code
+std::string ref_page_json(const std::string& name_or_link);            // {title, url, html} or {error}
 
 // ---------------------------------------------------------------- projects: folders of plain C++ files
 struct Item { std::string kind, text; size_t b = 0, e = 0; int line = 0, level = 0; };   // kind: code | md | ccode | fn | endfn

@@ -434,6 +434,8 @@ bool modified(const std::vector<std::string>& t, size_t i) {
   return n == "<<" && i == 0;   // out << x: the stream on the left changes
 }
 
+std::vector<std::string> code_tokens(const std::string& s) { return tokens(s, (size_t)-1); }
+
 Deps deps_of(const std::string& code) {
   Deps d;
   static const std::set<std::string> kw = {"auto", "const", "constexpr", "static", "inline", "int", "double", "float", "char", "bool",
