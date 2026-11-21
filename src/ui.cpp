@@ -590,7 +590,7 @@ function focus(uid) {
   curEl()?.classList.remove('focus');
   focusUid = uid; focusKey = null;
   if (uid && cells[uid]) { cells[uid].el.classList.add('focus'); cells[uid].el.scrollIntoView({block: 'nearest'}); }
-  if (sideMode === 'ref' && $('#side').classList.contains('open')) refreshSide();
+  if (sideMode === 'ref' && !refQuery && $('#side').classList.contains('open')) refreshSide();
 }
 function focusEl(e) {
   if (!e) return;
@@ -1050,19 +1050,28 @@ async function refreshSide() {
 // cppreference pages for the std names in the selected cell. The page HTML is from the network, so only an
 // allowlist of tags and attributes is kept; links to other cppreference pages open in place.
 const refOpen = new Set();
+let refQuery = '';
 async function refPanel(s) {
   s.append(el('h2', '', 'Reference'));
-  const c = cells[focusUid];
-  if (!c) { s.append(el('div', 'vdim', 'select a cell to see the std names it uses')); return; }
-  const r = await api('/api/refs', {uid: focusUid});
-  if (c !== cells[focusUid] || sideMode !== 'ref') return;
-  if (r.error) { s.append(el('div', 'vdim', r.error)); return; }
-  if (!r.names.length) { s.append(el('div', 'vdim', 'no std names in this cell')); return; }
+  const q = el('input'); q.placeholder = 'search cppreference (vector, push_back, chrono…)'; q.value = refQuery; q.style.width = '100%';
+  const list = el('div'); s.append(q, list);
+  let timer;
+  q.oninput = () => { clearTimeout(timer); timer = setTimeout(() => { refQuery = q.value.trim(); refList(list); }, 150); };
+  refList(list);
+}
+async function refList(list) {
+  const c = cells[focusUid], query = refQuery;
+  if (!query && !c) { list.replaceChildren(el('div', 'vdim', 'select a cell to see the std names it uses, or search')); return; }
+  const r = query ? await api('/api/refsearch', {q: query}) : await api('/api/refs', {uid: focusUid});
+  if (query !== refQuery || (!query && c !== cells[focusUid]) || sideMode !== 'ref') return;
+  list.textContent = '';
+  if (r.error) { list.append(el('div', 'vdim', r.error)); return; }
+  if (!r.names.length) { list.append(el('div', 'vdim', query ? 'no matches' : 'no std names in this cell')); return; }
   for (const n of r.names) {
     const d = el('details', 'ref'), body = el('div', 'refbody');
     d.append(el('summary', '', n.name), body);
     d.ontoggle = () => { if (d.open) { refOpen.add(n.name); if (!body.childNodes.length) refLoad(body, n.name, []); } else refOpen.delete(n.name); };
-    s.append(d);
+    list.append(d);
     if (refOpen.has(n.name)) d.open = true;
   }
 }

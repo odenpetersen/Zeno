@@ -48,6 +48,7 @@ std::vector<std::string> code_tokens(const std::string& s);   // identifiers and
 
 // ---------------------------------------------------------------- reference pages (cppreference)
 std::string ref_names_json(const std::string& code, bool using_std);   // [{name, link}] of std names in the code
+std::string ref_search_json(std::string q);                             // [{name, link}] matching a query
 std::string ref_page_json(const std::string& name_or_link);            // {title, url, html} or {error}
 
 // ---------------------------------------------------------------- projects: folders of plain C++ files

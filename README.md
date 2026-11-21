@@ -96,7 +96,7 @@ Each cell's toolbar has a **run ▾** menu (also on right-click of ▶), with ke
   - an address-ordered heap map
   - a valgrind-style leak check (blocks unreachable from any variable)
 - **Variables panel:** everything defined, inspectable.
-- **Reference panel:** the `std` names in the selected cell (`std::priority_queue`, `std::chrono::steady_clock`, …), each expanding to its cppreference page, with links between pages followed in place. Pages are fetched once and cached in `~/.cache/zeno/cppref`.
+- **Reference panel:** the `std` names in the selected cell (`std::priority_queue`, `std::chrono::steady_clock`, …), each expanding to its cppreference page, with links between pages followed in place. The search box finds any name in cppreference's index, class members included (`push_back`, `chrono`). Pages are fetched once and cached in `~/.cache/zeno/cppref`.
 - **Macros:** click any macro use to expand it in place, highlighted. Click again to collapse.
 
 ## Editing, git, hot reload

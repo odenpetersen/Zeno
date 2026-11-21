@@ -582,6 +582,7 @@ void handle(int fd) {
     for (auto& x : cells_under(g_root, "")) if (std::regex_search(x.code, std::regex("using\\s+namespace\\s+std\\s*;"))) using_std = true;
     respond(fd, 200, "application/json", find_cell(g_root, b["uid"].str(), c) ? ref_names_json(c.code, using_std) : "{\"names\":[]}");
   }
+  else if (p == "/api/refsearch") respond(fd, 200, "application/json", ref_search_json(b["q"].str()));   // {q} -> matching names
   else if (p == "/api/ref") respond(fd, 200, "application/json", ref_page_json(b["name"].str()));   // {name | link} -> page
   else if (p == "/api/results") {   // {uid} -> text of its last run, plus the batch id
     std::string uid = b["uid"].str();
