@@ -898,9 +898,8 @@ const rangeOf = navEl => navEl.classList.contains('cell') ? cells[navEl.dataset.
 async function insertAt(navEl, above) {
   const r = rangeOf(navEl);
   if (!r || r.ro) { toast(r ? 'read-only (listed in .zeno.json)' : 'nothing to insert next to'); return; }
-  const ph = el('div'), at = navEl.classList.contains('gh') ? navEl.parentElement : navEl, pos = above ? r.b : r.e;
-  above ? at.before(ph) : at.after(ph);
-  return editTarget({key: 'ins:' + r.file + ':' + pos, file: r.file, b: pos, e: pos, before: above, node: ph, text: ''});
+  const t = {file: r.file, b: above ? r.b : r.e, e: above ? r.b : r.e, before: above, text: ''};
+  if (await save(t, ';')) await afterEdit(t, ';', false);
 }
 // dd deletes a cell or comment (not a whole group); u puts the last deletion back
 async function deleteSel(navEl) {
